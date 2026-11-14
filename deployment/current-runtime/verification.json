@@ -1,0 +1,27 @@
+{
+  "verified_at_utc": "2026-11-14T13:45:28.494098+00:00",
+  "service_version": "0.4.0",
+  "running_executable_sha256": "d19488c6dfdcfebb69bdbb8c938b3fa4cbbad8697a7199af8ffd57ceadb25f99",
+  "core_source_modules": 23,
+  "frozen_modules_matched": 22,
+  "deployed_script_files": 15,
+  "worker_entry_matched": true,
+  "raw_task_helper_matched": true,
+  "known_credential_matches": 0,
+  "credential_shape_findings": 0,
+  "structured_secret_findings": 0,
+  "tests": {
+    "passed": 302,
+    "skipped": 7,
+    "deselected_native_tests": 2,
+    "failures": 0,
+    "errors": 0
+  },
+  "production_restarted": false,
+  "business_jobs_or_models_called": false,
+  "notes": [
+    "Tests ran from this independent publication checkout.",
+    "Large third-party runtimes, binary distributions, production credentials and task data are excluded; all project code is included.",
+    "All installed source files match. The optional Windows Service entrypoint is not embedded in the desktop-started executable."
+  ]
+}

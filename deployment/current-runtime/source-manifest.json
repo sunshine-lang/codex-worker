@@ -1,0 +1,301 @@
+{
+  "captured_at_utc": "2026-11-14T13:43:03.360813+00:00",
+  "service_version": "0.4.0",
+  "running_executable": "CodexRemoteWorker.exe",
+  "running_executable_sha256": "d19488c6dfdcfebb69bdbb8c938b3fa4cbbad8697a7199af8ffd57ceadb25f99",
+  "installed_launcher_sha256": "6ff8721a8dea7c9168766ce314d927c5cb2f4a5094915531163aa8c9e532b447",
+  "verification_method": "Compare normalized Python code objects read from the installed EXE without executing it; SHA-256 compare installed source and tool-Python package.",
+  "worker_entry": {
+    "path": "packaging/worker_entry.py",
+    "sha256": "aa88526e02ec941a99648c2dcc3579dd75b3aa8c2691e1ff087b3deb8521118c",
+    "embedded_bytecode_matches": true
+  },
+  "task_helper_raw_file_matches": true,
+  "modules": [
+    {
+      "module": "codex_remote_worker",
+      "path": "src/codex_remote_worker/__init__.py",
+      "sha256": "d2ad7d9fa308fb936527cde93cbf1448f46d92b03c6cf6b78e2c52f97576a49d",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.__main__",
+      "path": "src/codex_remote_worker/__main__.py",
+      "sha256": "06971a61e00740be30419f033bb50b111bd54174011ea9eaf72db88d5fc23f53",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.access_audit",
+      "path": "src/codex_remote_worker/access_audit.py",
+      "sha256": "9810aa5085c6990823ab318f66014012df1a0b7b3762e47e4b82c58e54d21538",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.app",
+      "path": "src/codex_remote_worker/app.py",
+      "sha256": "a3e2410bfc4d97645fd0378647e020da900293cd082270291417eba4a13c02f7",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.common",
+      "path": "src/codex_remote_worker/common.py",
+      "sha256": "97995302e2d4a8e19b574ccee2cf81f8f64e5c31cf9c5dac2d2cdb23814a48b6",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.config",
+      "path": "src/codex_remote_worker/config.py",
+      "sha256": "5379dcc7e7372b3b417c5c5cbd4c2755f03427d8aa17d4e03307e8100bfc80fa",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.doctor",
+      "path": "src/codex_remote_worker/doctor.py",
+      "sha256": "9022aef00cdfd222e13ee11f0452ecab5cc418d4bc6225098a9401ed8d2a2532",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.files",
+      "path": "src/codex_remote_worker/files.py",
+      "sha256": "312e112b70e02e678b6d653d5c98ebdc31a1db2bc93c109c7b42257a129a61cd",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.json_delivery",
+      "path": "src/codex_remote_worker/json_delivery.py",
+      "sha256": "2bcf1f6fb6f9d0f00046cd13c52d3ab508ab5b40223b15578379f7a947fe27c5",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.project_archive",
+      "path": "src/codex_remote_worker/project_archive.py",
+      "sha256": "8d5ea18107f81040e139dae089ba9e55cbc802501af0c2668d18d08eb667d4dd",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.qa",
+      "path": "src/codex_remote_worker/qa.py",
+      "sha256": "c5c4c8fb11b2e07d970f348196a56560729717b8af9b496f874d7db5e446e0fc",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.runner",
+      "path": "src/codex_remote_worker/runner.py",
+      "sha256": "26b743f2847cf16b8e47b38c4611afb4655d00b63e4497885b835e176f608328",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.sandbox_state",
+      "path": "src/codex_remote_worker/sandbox_state.py",
+      "sha256": "69485377166aa13a03af0ee96868af361cc49c6be9dd76ec2c6c5768672a203c",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.service",
+      "path": "src/codex_remote_worker/service.py",
+      "sha256": "220caeea809f7da4dabceb91a414d372171855bd6f6a6c188f5969f9c6c6d320",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": false,
+      "embedded_bytecode_matches": null
+    },
+    {
+      "module": "codex_remote_worker.store",
+      "path": "src/codex_remote_worker/store.py",
+      "sha256": "f747e3dfeb2551fe8aac6124fbb1fab171723852462afdfe98f5df962300139b",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.subscription",
+      "path": "src/codex_remote_worker/subscription.py",
+      "sha256": "556d347612b1a79bbb4f04cb58a58b4d1d863a4d0ac317d6a4c8446e3f6a3b59",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.task_runtime",
+      "path": "src/codex_remote_worker/task_runtime.py",
+      "sha256": "1008ff6d48c5f20919b23889c513e061c76dab9c42f0c9207ace57b31f2e6e31",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.task_tools",
+      "path": "src/codex_remote_worker/task_tools.py",
+      "sha256": "00ded0495319d981c8c0409e4e30ab2612972e5f371aa2ff19eff9f2e75c9eb8",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.tm_policy",
+      "path": "src/codex_remote_worker/tm_policy.py",
+      "sha256": "36d6a03c6d43f79ec9d8f7e59bdc43d5a072536a41a888410d815893d3403cc9",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.translation_task_api",
+      "path": "src/codex_remote_worker/translation_task_api.py",
+      "sha256": "622b7c937ec3117da46f98b89fd550db4d6c0097b286618941ae1b78294d536f",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.translation_tasks",
+      "path": "src/codex_remote_worker/translation_tasks.py",
+      "sha256": "8b666067f9d04ff8f50f95965eeb1cade5f0318346b354fc40e4a39f99fed808",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.windows",
+      "path": "src/codex_remote_worker/windows.py",
+      "sha256": "733a9d7f48240f6874686e410c761c6b3a7e0671676655475f7bab0a901ea22e",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    },
+    {
+      "module": "codex_remote_worker.worker",
+      "path": "src/codex_remote_worker/worker.py",
+      "sha256": "c8fc1f837578d8638804d17fcc15f208f2148fe8f57ee36e9537a49d876ce7ef",
+      "installed_source_matches": true,
+      "installed_python_matches": true,
+      "embedded_in_running_exe": true,
+      "embedded_bytecode_matches": true
+    }
+  ],
+  "deployed_scripts": [
+    {
+      "path": "deployment/current-runtime/runtime/exe-validation.ps1",
+      "sha256": "74b5c9bcf4808656173386a2c0cb8ab32c5575ac55ec03eced162bafd53eacb8",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/runtime/start-worker.before-exe.ps1",
+      "sha256": "5a99049164ee6136083fb0a61e28296944e946728f45b33aab0db74ed24f6d9f",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/runtime/start-worker.local.ps1",
+      "sha256": "c2bba6d9ce9704e0df003d94706359166bb999f1566df22fddb1d293bb86748d",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/runtime/startup_diagnose.py",
+      "sha256": "119daa786234d64bf97683dbaaf8912aa0b78c518bdeffc6843ea876d34492f8",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/runtime/verify-json-runtime.py",
+      "sha256": "be599bf360eec826cc4357ef0e31bd69b94dd99daf3ef0746e1338d6c1549217",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/runtime/wfp-network-lockdown.py",
+      "sha256": "34a6d8b58ee0c49a223e9699ba7e209d75d8c6e30929a4eba6c5714bba4c9135",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/build_langflow.py",
+      "sha256": "3f8f38f9e23bf5d02a6490b5ba7be37ac043bc1168ed3b1c45eeae99f6600ede",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/desktop-ensure.ps1",
+      "sha256": "dee0495c7a1fe461c58ab02fcc346892b9a9a5da596118e70067f8e33bec8880",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/desktop-repair.ps1",
+      "sha256": "45482adc89e5c61ccb90534495359629a5e2cc5367255d947756f7f6e4709437",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/desktop-start.ps1",
+      "sha256": "1eefcffc173fb4fb41c68aa7db2a9dae7b322678090a1c1bea6fc782db19aefe",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/desktop-stop.ps1",
+      "sha256": "89b708df9659a2f8dfd82dcfe6cedc13b2f81d18c5dac2b8653e716b8fafafab",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/install-service.ps1",
+      "sha256": "b78f5e63654eca94ab4feca26239576eeb0adb1d74addd4c5cd2d63a9a149844",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/install.ps1",
+      "sha256": "04d7b1789e2b6166486d94708cd2059c739f7dc1cb5d8ebbffc0e03459c237d4",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/start-worker.ps1",
+      "sha256": "54f6aa53f43289f0948f03deb50a38cb3b12ed7d35681781bdaa7a1117aa837b",
+      "byte_identical_to_installed": true
+    },
+    {
+      "path": "deployment/current-runtime/scripts/validate-json-runtime.local.py",
+      "sha256": "7717b8f7072989afafc29275dae888f500ccf00384890ad9ffa6da08730ab322",
+      "byte_identical_to_installed": true
+    }
+  ],
+  "note": "service.py is the alternate Windows Service entrypoint, installed but unused by this desktop-started frozen EXE. All 22 embedded Worker modules match; all 23 installed source modules are included."
+}

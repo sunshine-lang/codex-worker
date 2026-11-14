@@ -1,0 +1,2 @@
+# Preserve deployed source/script bytes for reproducible SHA-256 manifests.
+* -text

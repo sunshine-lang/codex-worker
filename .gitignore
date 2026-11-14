@@ -1,0 +1,36 @@
+# Credentials, identities and local configuration
+.env
+.env.*
+!.env.example
+config.local*
+config.*.local.json
+credentials.local*
+secrets.local*
+service-account.local*
+auth.json
+*.pem
+*.key
+/.aws/
+/.codex/
+# Runtime, business data, caches and generated artifacts
+/.runtime/
+/data/
+/Data/
+/jobs/
+/tasks/
+/logs/
+/artifacts/
+/build/
+/dist/
+*.sqlite3
+*.sqlite3-*
+*.log
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.DS_Store
