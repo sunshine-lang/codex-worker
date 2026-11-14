@@ -182,6 +182,9 @@ class TaskStore:
 def public_task(task):
     total = task['total_rows']
     finished = task['tm_rows'] + task['translated_rows']
+    active = [b['job_id'] for b in task['batches'] if b.get('job_id') and b.get('status') not in ('completed','failed','cancelled','interrupted')]
+    if task['status'] in TASK_TERMINAL:
+        active = []
     return {'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
             'review_status': 'not_started', 'result_kind': 'translation_candidate',
@@ -189,7 +192,10 @@ def public_task(task):
                          'model_required_segments': total-task['tm_rows'], 'model_translated_segments': task['translated_rows'],
                          'finished_segments': finished, 'percent': round(finished*100/total, 2) if total else 100,
                          'total_batches': len(task['batches']), 'completed_batches': task['cursor']},
-            'active_worker_job_id': task['batches'][task['cursor']].get('job_id') if task['cursor'] < len(task['batches']) else None,
+            'active_worker_job_id': active[0] if active else None,
+            'active_worker_job_ids': active,
+            'completed_batch_indices': [i for i,b in enumerate(task['batches']) if b.get('status')=='completed'],
+            'batch_concurrency': task.get('batch_concurrency', 1),
             'status_path': '/v1/tasks/'+task['task_id'],
             'result_path': '/v1/tasks/'+task['task_id']+'/result' if task['status']=='completed' else None,
             'error': task.get('error')}
@@ -205,6 +211,7 @@ class TaskManager:
         self.store = TaskStore(settings.data_root/'tasks.sqlite3')
         self.cache, self.task, self.stopping = {}, None, False
         self.wakeup = asyncio.Event()
+        self.rotation = 0
 
     async def start(self):
         self.task = asyncio.create_task(self._loop())
@@ -241,6 +248,7 @@ class TaskManager:
                   'batch_policy': asdict(self.policy), 'codex_config_sha256': codex_config_digest(self.settings),
                   'plan_sha256': file_digest(stage/'plan.json'),
                   'total_rows': len(plan['records']), 'tm_rows': len(plan['locked']), 'translated_rows': 0,
+                  'batch_concurrency': self.settings.task_batch_concurrency,
                   'cursor': 0, 'batches': [{'indices': indices, 'job_id': None} for indices in plan['batches']], 'error': None}
         result = self.store.accept(record, stage, self.root/task_id, self.settings.queue_capacity)
         return result
@@ -260,7 +268,8 @@ class TaskManager:
         return self.cache[task_id]
 
     def _enqueue(self, task, batch):
-        key = str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+str(task['cursor'])))
+        index = task['batches'].index(batch)
+        key = str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+str(index)))
         previous = self.jobs.by_key(key)
         if previous:
             return previous
@@ -299,6 +308,8 @@ class TaskManager:
                 shutil.rmtree(stage)
 
     def _collect(self, task, batch, job):
+        if batch.get('status') == 'completed':
+            return
         execution = job.get('execution') or {}
         if execution.get('exit_code') != 0 or execution.get('turn_completed') is not True or execution.get('turn_failed') is True or execution.get('trace_complete') is not True:
             raise JobError('EXECUTION_INVALID', 'Worker 执行记录未确认完整完成。')
@@ -311,12 +322,13 @@ class TaskManager:
             raise JobError('ARTIFACT_CHANGED', 'Worker 译文产物校验失败。')
         value = load_json(path.read_text(encoding='utf-8-sig'))
         check_json_result(batch_packet(self._plan(task), batch['indices'], task['task_id']), value)
-        path = self.root/task['task_id']/'results'/f'batch_{task["cursor"]:05d}.json'
+        index = task['batches'].index(batch)
+        path = self.root/task['task_id']/'results'/f'batch_{index:05d}.json'
         write_json(path, value)
         batch['result_sha256'] = file_digest(path)
         batch['status'] = 'completed'
-        task['translated_rows'] += len(batch['indices'])
-        task['cursor'] += 1
+        task['translated_rows'] = sum(len(b['indices']) for b in task['batches'] if b.get('status')=='completed')
+        task['cursor'] = sum(b.get('status')=='completed' for b in task['batches'])
         task['stage'] = 'between_batches'
         self.store.save(task)
 
@@ -343,35 +355,80 @@ class TaskManager:
         self.cache.pop(task['task_id'], None)
 
     async def advance(self, task):
-        if task['cursor'] == len(task['batches']):
+        task.update(status='running')
+        task.setdefault('batch_concurrency', self.settings.task_batch_concurrency)
+        # Stable indices recover children accepted before the parent's job_id checkpoint.
+        for index, batch in enumerate(task['batches']):
+            if batch.get('status')=='completed':
+                continue
+            if not batch.get('job_id'):
+                key = str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+str(index)))
+                previous = self.jobs.by_key(key)
+                if previous:
+                    batch['job_id'] = previous['job_id']
+            if not batch.get('job_id'):
+                continue
+            try:
+                job = self.jobs.get(batch['job_id'])
+                if job['status'] in ('completed','needs_review'):
+                    await asyncio.to_thread(self._collect, task, batch, job)
+                elif job['status'] in ('failed','cancelled','interrupted'):
+                    batch.update(status='failed', error=job.get('error') or {'code':'BATCH_FAILED','message':'子任务失败或中断。'})
+                else:
+                    batch['status'] = job['status']
+            except JobError as exc:
+                batch.update(status='failed', error=exc.public())
+        failures = [i for i,b in enumerate(task['batches']) if b.get('status')=='failed']
+        if failures or task.get('error'):
+            task['error'] = task.get('error') or {'code':'BATCH_FAILED',
+                'message':'翻译批次失败；停止新派发，保留已成功批次，不自动重跑。','batch_indices':failures}
+            for batch in task['batches']:
+                if batch.get('status')=='queued':
+                    cancelled = self.jobs.cancel(batch['job_id'], defer_project=True)
+                    if cancelled.get('_finish_queued_cancel'):
+                        await self.worker._finish(batch['job_id'], 'cancelled')
+                    batch['status'] = self.jobs.get(batch['job_id'])['status']
+            live = any(b.get('job_id') and b.get('status') not in ('completed','failed','cancelled','interrupted') for b in task['batches'])
+            task.update(status='running' if live else 'failed', stage='draining_after_failure' if live else 'failed')
+            self.store.save(task)
+            return
+        if all(b.get('status')=='completed' for b in task['batches']):
             await asyncio.to_thread(self._finish, task)
             return
-        task.update(status='running')
-        batch = task['batches'][task['cursor']]
-        if not batch['job_id']:
+        limit = min(task['batch_concurrency'], self.settings.max_concurrent_jobs)
+        inflight = sum(bool(b.get('job_id')) and b.get('status')!='completed' for b in task['batches'])
+        task['stage'] = 'translating'
+        for batch in task['batches']:
+            if inflight >= limit:
+                break
+            if batch.get('job_id') or batch.get('status')=='completed':
+                continue
+            if self.stopping:
+                task['stage'] = 'stopping'
+                break
             try:
                 job = await asyncio.to_thread(self._enqueue, task, batch)
             except JobError as exc:
-                if exc.code in ('QUEUE_FULL', 'MAINTENANCE'):
-                    task['stage'] = 'waiting_for_maintenance' if exc.code == 'MAINTENANCE' else 'waiting_for_worker'
-                    self.store.save(task)
-                    return
-                raise
-            batch['job_id'] = job['job_id']
-            task['stage'] = 'translating'
+                if exc.code not in ('QUEUE_FULL','MAINTENANCE'):
+                    batch.update(status='failed', error=exc.public())
+                    task['error'] = {**exc.public(), 'batch_indices':[task['batches'].index(batch)]}
+                    task['stage'] = 'draining_after_failure'
+                    break
+                task['stage'] = 'waiting_for_maintenance' if exc.code=='MAINTENANCE' else 'waiting_for_worker'
+                break
+            batch.update(job_id=job['job_id'], status=job['status'])
+            inflight += 1
             self.store.save(task)
             self.worker.wakeup.set()
-        job = self.jobs.get(batch['job_id'])
-        if job['status'] in ('completed', 'needs_review'):
-            await asyncio.to_thread(self._collect, task, batch, job)
-            if task['cursor'] == len(task['batches']):
-                await asyncio.to_thread(self._finish, task)
-        elif job['status'] in ('failed', 'cancelled', 'interrupted'):
-            raise JobError('BATCH_FAILED', '当前翻译批次失败或中断；已保留成功批次，不自动重跑状态不明的模型任务。')
+        self.store.save(task)
 
     async def _loop(self):
         while not self.stopping:
             tasks = [] if (self.settings.data_root/'.maintenance.json').exists() else self.store.active()
+            if tasks:
+                offset = self.rotation % len(tasks)
+                tasks = tasks[offset:] + tasks[:offset]
+                self.rotation += 1
             for task in tasks:
                 if self.stopping:
                     break

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -258,11 +259,14 @@ class CodexRunner:
             'Local\\CodexRemoteWorker-' + job['job_id'], registered)
         touch(stage='agent_running')
         byte_count = 0
+        # Pipe reads can block for the whole model call. Keep termination and readiness off this pool.
+        pipe_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='codex-pipe')
+        loop = asyncio.get_running_loop()
 
         async def read_pipe(pipe, filename, events):
             nonlocal byte_count
             with (root / 'logs' / filename).open('wb') as stream:
-                while line := await asyncio.to_thread(pipe.readline, 1024 * 1024 + 1):
+                while line := await loop.run_in_executor(pipe_pool, pipe.readline, 1024 * 1024 + 1):
                     if len(line) > 1024 * 1024:
                         execution['trace_complete'] = False
                         raise JobError('LIMIT_EXCEEDED', '单条运行事件超过限制。')
@@ -333,5 +337,8 @@ class CodexRunner:
                 for reader in readers:
                     reader.cancel()
                 await asyncio.gather(*readers, return_exceptions=True)
-                process.close()
+                try:
+                    process.close()
+                finally:
+                    pipe_pool.shutdown(wait=True, cancel_futures=True)
 

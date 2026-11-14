@@ -32,3 +32,10 @@
 
 同一提交编号携带相同文件与选项会复用整单，不同输入返回 409。主动重新翻译请生成新 UUID。
 安装由当前源码增量合并后重建在用 EXE；仅给 Python 环境复制模块不会更新打包程序。
+
+## 有界并发增量
+
+`bounded-concurrency/1` 增加服务端 `max_concurrent_jobs` 与 `task_batch_concurrency` 配置，默认均为1。
+多个批次可乱序完成，使用稳定批次索引收集并按原顺序合并。查询新增 `active_worker_job_ids`、
+`completed_batch_indices` 和 `batch_concurrency`；旧单值活动job字段仍保留。
+完整部署与失败处理约定见 [并发升级说明](CONCURRENCY_UPGRADE.md)。

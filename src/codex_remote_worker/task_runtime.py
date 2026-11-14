@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 
@@ -157,7 +158,9 @@ async def prepare_task_runtime(settings, job, root, touch, stopped, redactor):
                              'Local\\CodexWorkerPrepare-' + job['job_id'],
                              lambda metadata: touch(process=metadata))
     process.stdin.close()
-    readers = [asyncio.create_task(asyncio.to_thread(stream.read, 1024 * 1024))
+    pipe_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='prepare-pipe')
+    loop = asyncio.get_running_loop()
+    readers = [loop.run_in_executor(pipe_pool, stream.read, 1024 * 1024)
                for stream in (process.stdout, process.stderr)]
     try:
         async with asyncio.timeout(55):
@@ -194,8 +197,13 @@ async def prepare_task_runtime(settings, job, root, touch, stopped, redactor):
     except TimeoutError:
         raise JobError('GUIDE_PREPARATION_TIMEOUT', '指南预处理超时，未调用翻译模型。') from None
     finally:
-        await asyncio.to_thread(process.terminate_tree)
-        for reader in readers:
-            reader.cancel()
-        await asyncio.gather(*readers, return_exceptions=True)
-        process.close()
+        try:
+            await asyncio.to_thread(process.terminate_tree)
+        finally:
+            for reader in readers:
+                reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
+            try:
+                process.close()
+            finally:
+                pipe_pool.shutdown(wait=True, cancel_futures=True)

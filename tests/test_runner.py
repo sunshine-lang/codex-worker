@@ -6,6 +6,8 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -123,3 +125,51 @@ def test_cleanup_failure_is_not_converted_to_cancelled(settings, monkeypatch):
         asyncio.run(run())
     finally:
         store.close()
+
+
+def test_blocked_pipes_do_not_starve_the_control_executor(settings, tmp_path, monkeypatch):
+    from codex_remote_worker import runner as module
+    root=tmp_path/'isolated-pipes'
+    for name in ('input','work','control','logs'):(root/name).mkdir(parents=True)
+    prompt=b'fixture';(root/'input/prompt.md').write_bytes(prompt)
+    release=root/'release';reader_started=threading.Event();owned=[]
+    script=tmp_path/'holding-child.py'
+    script.write_text('import pathlib,sys,time\nsys.stdin.buffer.read()\n'
+                      'while not pathlib.Path(sys.argv[1]).exists(): time.sleep(.005)\n'
+                      'print(\'{"type":"turn.completed"}\',flush=True)\n')
+    class TrackedPipe:
+        def __init__(self,stream):self.stream=stream
+        def readline(self,*args):reader_started.set();return self.stream.readline(*args)
+        def close(self):self.stream.close()
+    class Process:
+        def __init__(self,command,cwd,env,name,on_created):
+            self.process=subprocess.Popen([sys.executable,str(script),str(release)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            self.stdin=self.process.stdin;self.stdout=TrackedPipe(self.process.stdout);self.stderr=self.process.stderr
+            on_created({'pid':self.process.pid});owned.append(self)
+        def poll(self):return self.process.poll()
+        def terminate_tree(self):
+            if self.process.poll() is None:self.process.kill()
+            self.process.wait(timeout=2)
+        def close(self):
+            for stream in (self.stdin,self.stdout,self.stderr):stream.close()
+    monkeypatch.setattr(module,'WindowsProcess',Process)
+    async def prepared(*args):return {'model_called':False}
+    monkeypatch.setattr(module,'prepare_task_runtime',prepared)
+    runner=CodexRunner(settings)
+    monkeypatch.setattr(runner,'ready',lambda:{'ready':True,'codex_version':'fixture','tools':{}})
+    job={'job_id':'job_pipes','inputs':{'prompt_file':{'filename':'prompt.md'}},'prompt_sha256':digest(prompt),'options':{'timeout_seconds':60}}
+    async def exercise():
+        loop=asyncio.get_running_loop();loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        task=asyncio.create_task(runner.run(job,root,lambda **fields:None,lambda:False,Redactor([])))
+        try:
+            # Wait until at least one blocking pipe read owns a thread.
+            for _ in range(200):
+                if reader_started.is_set():break
+                await asyncio.sleep(.005)
+            assert owned and reader_started.is_set()
+            assert await asyncio.wait_for(asyncio.to_thread(lambda:True),.2)
+        finally:
+            release.touch()
+            await asyncio.wait_for(task,2)
+    asyncio.run(exercise())
+    assert all(p.poll() is not None for p in owned)

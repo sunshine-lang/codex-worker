@@ -76,6 +76,7 @@ def test_maintenance_race_after_parent_dispatch_does_not_fail_task(settings, mon
                 def maintenance(*args):
                     raise JobError('MAINTENANCE', 'fixture', 503)
                 monkeypatch.setattr(manager, '_enqueue', maintenance)
+                manager.stopping = False  # Exercise an active dispatch without restarting its background loop.
                 await manager.advance(manager.store.get(task_id))
                 state = manager.store.get(task_id)
                 assert state['status'] == 'running' and state['error'] is None

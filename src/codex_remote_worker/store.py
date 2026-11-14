@@ -95,11 +95,14 @@ class Store:
             self._save(job)
             return job, True
 
-    def claim(self):
+    def claim(self, max_active=1):
+        if type(max_active) is not int or not 1 <= max_active <= 16:
+            raise ValueError('max_active must be an integer from 1 to 16')
         with self.transaction():
             if (self.data_root / '.maintenance.json').exists():
                 return None
-            if self.db.execute("SELECT 1 FROM jobs WHERE status IN ('running','checking','cancelling') LIMIT 1").fetchone():
+            active = self.db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('running','checking','cancelling')").fetchone()[0]
+            if active >= max_active:
                 return None
             row = self.db.execute("SELECT record FROM jobs WHERE status='queued' ORDER BY created_at,job_id LIMIT 1").fetchone()
             if row is None:
