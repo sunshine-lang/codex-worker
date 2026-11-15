@@ -7,7 +7,7 @@ from typing import Literal
 import re
 import tomllib
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from .common import JobError
 
@@ -63,12 +63,20 @@ class Settings(BaseModel):
     bind_host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
     queue_capacity: int = Field(default=10, ge=1, le=100)
+    max_concurrent_jobs: int = Field(default=1, ge=1, le=16, strict=True)
+    task_batch_concurrency: int = Field(default=1, ge=1, le=16, strict=True)
     max_file_bytes: int = Field(default=32 * 1024**2, gt=0)
     max_prompt_bytes: int = Field(default=1024**2, gt=0)
     max_upload_bytes: int = Field(default=64 * 1024**2, gt=0)
     max_output_bytes: int = Field(default=32 * 1024**2, gt=0)
     max_log_bytes: int = Field(default=64 * 1024**2, ge=1024)
     min_free_bytes: int = Field(default=1024**3, ge=0)
+
+    @model_validator(mode='after')
+    def bounded_task_concurrency(self):
+        if self.task_batch_concurrency > self.max_concurrent_jobs:
+            raise ValueError('task_batch_concurrency must not exceed max_concurrent_jobs')
+        return self
 
     @field_validator("data_root", "codex_executable", "codex_home", "tool_python", "doc_converter")
     @classmethod

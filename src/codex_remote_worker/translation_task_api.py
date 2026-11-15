@@ -39,7 +39,10 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
         return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
                 'semantic_review': False, 'max_segments': 10000,
-                'batch_policy': {'max_rows': policy.max_rows, 'max_chars': policy.max_chars}}
+                'batch_policy': {'max_rows': policy.max_rows, 'max_chars': policy.max_chars},
+                'scheduler_version': 'bounded-concurrency/1', 'bounded_parallel_execution': True,
+                'concurrency': {'max_concurrent_jobs': settings.max_concurrent_jobs,
+                                'task_batch_concurrency': settings.task_batch_concurrency}}
 
     @router.post('')
     async def submit(request: Request):

@@ -4,6 +4,7 @@
 !.env.example
 config.local*
 config.*.local.json
+config.trial.json
 credentials.local*
 secrets.local*
 service-account.local*

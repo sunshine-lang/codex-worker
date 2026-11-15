@@ -1,0 +1,12 @@
+{
+  "baseline_root": "C:\\CodexRemoteWorker",
+  "data_root": "C:\\CodexWorkerData-AppServer-8788",
+  "port": 8788,
+  "bind_host": "0.0.0.0",
+  "codex_executable": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe",
+  "expected_codex_version": "0.169.0-alpha.11.1",
+  "max_concurrent_jobs": 4,
+  "task_batch_concurrency": 4,
+  "authentication_mode": "chatgpt",
+  "codex_home": "C:\\CodexWorkerData-AppServer-8788\\private\\codex-home"
+}

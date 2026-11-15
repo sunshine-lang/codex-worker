@@ -1,0 +1,5 @@
+# Place these settings in the dedicated 8788 CODEX_HOME/config.toml.
+# This is a model-settings example, not an authentication file.
+model = "gpt-6-astra"
+model_provider = "openai"
+model_reasoning_effort = "xhigh"

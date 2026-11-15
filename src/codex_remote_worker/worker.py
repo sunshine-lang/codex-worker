@@ -17,6 +17,7 @@ class Worker:
         self.shutdown_requested = False
         self.blocked = None
         self.task = None
+        self.executions = {}
         self.wakeup = asyncio.Event()
         self.redactor = Redactor(settings.secret_values(), [settings.data_root, settings.codex_home])
 
@@ -44,23 +45,45 @@ class Worker:
         return await asyncio.to_thread(self.runner.ready)
 
     async def _loop(self):
-        while not self.shutdown_requested:
-            try:
-                job = None
-                if self.store.has_queued() and (await self.ready())['ready']:
-                    job = self.store.claim()
-                if job:
-                    await self._execute(job)
-                    continue
-                self.wakeup.clear()
+        try:
+            while not self.shutdown_requested:
                 try:
-                    await asyncio.wait_for(self.wakeup.wait(), .5)
-                except TimeoutError:
-                    pass
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.blocked = {'code': 'WORKER_STORAGE_ERROR', 'message': '任务记录或存储失败，已暂停派发；请检查服务存储。'}
+                    for job_id, execution in list(self.executions.items()):
+                        if execution.done():
+                            del self.executions[job_id]
+                            if not execution.cancelled():
+                                execution.result()
+                    job = None
+                    if (len(self.executions) < self.settings.max_concurrent_jobs
+                            and self.store.has_queued() and (await self.ready())['ready']):
+                        job = self.store.claim(max_active=self.settings.max_concurrent_jobs)
+                    if job:
+                        execution = asyncio.create_task(self._execute(job))
+                        self.executions[job['job_id']] = execution
+                        execution.add_done_callback(lambda _: self.wakeup.set())
+                        continue
+                    self.wakeup.clear()
+                    try:
+                        await asyncio.wait_for(self.wakeup.wait(), .5)
+                    except TimeoutError:
+                        pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.blocked = {'code': 'WORKER_STORAGE_ERROR', 'message': '任务记录或存储失败，已暂停派发；请检查服务存储。'}
+                    await asyncio.sleep(.1)
+        finally:
+            self.shutdown_requested = True
+            if self.executions:
+                # Keep ownership until every per-job Windows process tree has been reconciled.
+                drain = asyncio.gather(*self.executions.values(), return_exceptions=True)
+                try:
+                    await asyncio.shield(drain)
+                except asyncio.CancelledError:
+                    for execution in self.executions.values():
+                        execution.cancel()
+                    await drain
+                    raise
 
     def _cleanup_failed(self, job_id):
         self.blocked = {'code': 'PROCESS_CLEANUP_FAILED', 'message': '无法确认任务进程已停止，已暂停派发。'}

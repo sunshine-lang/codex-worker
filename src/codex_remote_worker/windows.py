@@ -109,6 +109,32 @@ class WindowsProcess:
         info = self.jobs.QueryInformationJobObject(self.job, self.jobs.JobObjectBasicAccountingInformation)
         return info['ActiveProcesses']
 
+    def active_processes(self):
+        """Identify owned processes by PID and creation time, including packaged Core."""
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        query = kernel.QueryInformationJobObject
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                          ctypes.POINTER(wintypes.DWORD)]
+        query.restype = wintypes.BOOL
+        class ProcessList(ctypes.Structure):
+            _fields_ = [('assigned', wintypes.DWORD), ('count', wintypes.DWORD),
+                        ('pids', ctypes.c_size_t * 1024)]
+        value = ProcessList()
+        if not query(int(self.job), 3, ctypes.byref(value), ctypes.sizeof(value), None):
+            raise JobError('PROCESS_INSPECTION_FAILED', '无法核验 App Server 进程成员。')
+        if value.count != value.assigned or value.count > 1024:
+            raise JobError('PROCESS_INSPECTION_FAILED', 'App Server 进程列表不完整。')
+        members = []
+        for pid in value.pids[:value.count]:
+            handle = self.api.OpenProcess(0x1000, False, pid)
+            try:
+                members.append((pid, self.process.GetProcessTimes(handle)['CreationTime'].timestamp()))
+            finally:
+                handle.Close()
+        return tuple(sorted(members))
+
     def terminate_tree(self, timeout=10):
         self.jobs.TerminateJobObject(self.job, 1)
         until = time.monotonic() + timeout

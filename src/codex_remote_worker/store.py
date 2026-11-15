@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
-from .common import JobError, TERMINAL, now
+from .common import JobError, TERMINAL, now, accept_directory
 
 
 class Store:
@@ -73,7 +73,7 @@ class Store:
                 count = self.db.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
                 if count >= capacity:
                     raise JobError("QUEUE_FULL", "任务队列已满，请稍后使用原提交编号重试。", 429)
-                stage.rename(target)
+                accept_directory(stage, target, self.data_root)
                 moved = True
                 self.db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?)",
                                 (record["job_id"], record["request_key"], record["fingerprint"],
@@ -95,11 +95,14 @@ class Store:
             self._save(job)
             return job, True
 
-    def claim(self):
+    def claim(self, max_active=1):
+        if type(max_active) is not int or not 1 <= max_active <= 16:
+            raise ValueError('max_active must be an integer from 1 to 16')
         with self.transaction():
             if (self.data_root / '.maintenance.json').exists():
                 return None
-            if self.db.execute("SELECT 1 FROM jobs WHERE status IN ('running','checking','cancelling') LIMIT 1").fetchone():
+            active = self.db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('running','checking','cancelling')").fetchone()[0]
+            if active >= max_active:
                 return None
             row = self.db.execute("SELECT record FROM jobs WHERE status='queued' ORDER BY created_at,job_id LIMIT 1").fetchone()
             if row is None:

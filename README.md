@@ -1,9 +1,13 @@
 # Codex Remote Worker
 
-**本仓库发布的是 2026-11-14 当前服务器实际使用的 0.4.0 源码，不是之前的 0.3.0 或早期 0.4.0 迁移 ZIP。**
+**本分支发布 2026-11-15 已部署到 8788 的 0.4.0 源码：App Server 复用、ChatGPT 订阅登录、最多四路并发。**
 
 当前版本号仍为 0.4.0；该号下包含后续整单任务接口、输入上下文分页等增量。具体代码以 Git commit 和
-[部署校验清单](deployment/current-runtime/source-manifest.json) 为准，而不只看版本号。
+[8788 部署校验清单](deployment/8788/source-manifest.json) 为准，而不只看版本号。
+
+分支：`codex/worker-8788-chatgpt-4way`，基于远端 `main` 的 `207e1b4`。
+部署入口、配置示例和验证范围见 [8788 部署说明](deployment/8788/README.md)。
+本次发布只整理并推送源码，没有重启或修改服务器上的 8787、8788。
 
 ## 已核对的当前能力
 
@@ -13,22 +17,20 @@
 - `utf8-absolute-tools-v4-bounded-context`：按字节预算分页读取完整指南及待处理记录，保留原全局行号。
 - Windows 进程树清理、文件/网络隔离自检、共享沙箱状态检测、缓存、日志脱敏和访问审计。
 - 原服务器专用账户部署、桌面当前用户订阅版、免安装启动器，以及构建/维护脚本。
+- 8788 使用四个独立常驻 App Server，通过私有 stdio 通信；全局 job 和同一整单批次均支持 1～4 路。
+- 每批独立 thread，确认卸载和运行时进程身份一致后复用 Server；异常回收及取消只作用于所属通道。
+- 8788 使用独立的 ChatGPT 登录目录，配置为 `gpt-6-astra / xhigh`；模型仅接收完整文本上下文并返回结构化 JSON。
 
 整单接口当前生成完整候选译文，`review_status=not_started`，不自动承诺完成独立语义审校。
 单批 `translate/review` 及上游业务编排保持各自边界；程序交付检查不等于语言质量保证。
 
 ## 这是当前在用的代码吗？
 
-发布前对比了工作区、已安装 src、工具 Python 包：23 个应用模块 SHA-256 全部一致。
-还直接读取已安装的运行 EXE：其中 22 个应用模块和 worker_entry 的标准化 Python 代码对象均与源码一致。
-`service.py` 是未被当前桌面启动型 EXE 使用的备用 Windows Service 入口，也完整保留。
-`deployment/current-runtime/` 另存实际部署脚本的字节副本。
+发布时，`src/codex_remote_worker/` 的 28 个 Python 模块与 8788 已安装源码逐文件 SHA-256 一致。
+`deployment/8788/` 保存该服务的五个入口/启动脚本字节副本、无凭据配置示例和验证摘要。
+当前 8788 通过 Python 源码启动，不使用旧桌面 EXE 作为 Worker 入口。
 
-运行 EXE SHA-256：
-
-```text
-d19488c6dfdcfebb69bdbb8c938b3fa4cbbad8697a7199af8ffd57ceadb25f99
-```
+`deployment/current-runtime/` 保留的是 2026-11-14 基线部署资料，其旧源码/EXE 清单不代表本分支的 8788。
 
 ## 目录
 
@@ -37,7 +39,8 @@ d19488c6dfdcfebb69bdbb8c938b3fa4cbbad8697a7199af8ffd57ceadb25f99
 - `packaging/`：所有启动器 C# 源码、manifest、安装/便携/沙箱相关脚本。
 - `scripts/`：构建、配置、安装、部署及维护脚本。
 - `integrations/langflow/`：项目现有 Langflow 集成源码与流程导出。
-- `deployment/current-runtime/`：实际部署脚本、模块和运行 EXE 的校验清单。
+- `deployment/8788/`：当前分支对应的 8788 部署入口、配置示例和源码校验清单。
+- `deployment/current-runtime/`：2026-11-14 基线部署资料，供历史核对。
 - `docs/`：当前功能说明与历史部署资料。
 - `third_party/`、`NOTICE.md`：相关第三方声明。
 
@@ -46,6 +49,7 @@ d19488c6dfdcfebb69bdbb8c938b3fa4cbbad8697a7199af8ffd57ceadb25f99
 
 ## 文档入口
 
+- [8788 四路订阅版部署与验证](deployment/8788/README.md)
 - [整单接口](docs/WHOLE_TASK_API.md)
 - [有预算的完整输入读取](docs/BOUNDED_CONTEXT.md)
 - [TM 与项目归档](docs/TM_PROJECT_DELIVERY.md)

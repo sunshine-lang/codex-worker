@@ -138,7 +138,7 @@ does not certify translation quality.
 '''
 
 
-async def prepare_task_runtime(settings, job, root, touch, stopped, redactor):
+async def prepare_task_runtime(settings, job, root, touch, stopped, redactor, *, host_prepared=False):
     # Check originals before spending time preparing guides or invoking a model.
     for entry in job['inputs'].values():
         for folder in ('input', 'work'):
@@ -153,7 +153,14 @@ async def prepare_task_runtime(settings, job, root, touch, stopped, redactor):
                '--permission-profile', 'translation', '--include-managed-config', '--sandbox-state-disable-network',
                '--cd', str(root / 'work'), '--', str(settings.tool_python), '-X', 'utf8',
                str(root / 'work' / '.worker' / 'task_tools.py'), 'prepare']
-    process = WindowsProcess(command, root / 'work', runtime_environment(settings, root),
+    environment = runtime_environment(settings, root)
+    if host_prepared:
+        # Fixed, host-owned parser only; no model-generated program or arguments.
+        command = [str(settings.tool_python), '-X', 'utf8',
+                   str(root / 'work' / '.worker' / 'task_tools.py'), 'prepare']
+        private = {name.upper() for name in settings.provider_env} | {'CODEX_HOME'}
+        environment = {name: value for name, value in environment.items() if name.upper() not in private}
+    process = WindowsProcess(command, root / 'work', environment,
                              'Local\\CodexWorkerPrepare-' + job['job_id'],
                              lambda metadata: touch(process=metadata))
     process.stdin.close()
@@ -189,6 +196,7 @@ async def prepare_task_runtime(settings, job, root, touch, stopped, redactor):
                    'guide_cache_hits': {role: entry['cached'] for role, entry in manifest['styles'].items()},
                    'helper_sha256': file_digest(root / 'work' / '.worker' / 'task_tools.py')}
         summary['context'] = report['context']
+        summary['preparation_mode'] = 'fixed_host_parser' if host_prepared else 'sandboxed_parser'
         write_json(root / 'control' / 'preparation.json', summary)
         return summary
     except TimeoutError:

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "prepared_at_utc": "2026-11-15T12:04:44.921356+00:00",
+  "publication_checks": {
+    "source_and_entrypoint_hashes_match_installed_8788": true,
+    "unit_and_contract_tests": {
+      "passed": 360,
+      "skipped": 7,
+      "deselected": 4,
+      "failed": 0,
+      "errors": 0,
+      "seconds": 59.781
+    },
+    "native_windows_rpc_and_process_tests": {
+      "passed": 2,
+      "skipped": 0,
+      "deselected": 27,
+      "failed": 0,
+      "errors": 0,
+      "seconds": 0.749
+    },
+    "models_called": false,
+    "services_started_stopped_or_modified": false,
+    "test_environment_note": "Use a short --basetemp on Windows; deeply nested checkout paths exceed MAX_PATH for test artifacts."
+  },
+  "prior_live_deployment_validation": {
+    "checked_at_utc": "2026-11-15T11:45:50.975153+00:00",
+    "authentication_mode": "chatgpt",
+    "provider": "openai",
+    "model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "max_concurrent_jobs": 4,
+    "task_batch_concurrency": 4,
+    "unit_tests_passed": 360,
+    "native_tests_passed": 2,
+    "whole_task_synthetic_model_rows": 129,
+    "whole_task_tm_rows": 1,
+    "whole_task_batches": 5,
+    "four_simultaneous_model_turns_observed": true,
+    "fifth_batch_reused_existing_server": true,
+    "all_four_server_generations": 1,
+    "normal_batch_cleanup_seconds_range": [
+      0.005,
+      0.014
+    ],
+    "cancel_one_of_four_other_three_completed": true,
+    "cross_job_output_leak_detected": false,
+    "whole_smoke_passed": true,
+    "cancellation_isolation_passed": true,
+    "8787_baseline_unchanged": true,
+    "limitation": "Synthetic validation, not a 1344-row business-data benchmark or independent semantic review."
+  }
+}

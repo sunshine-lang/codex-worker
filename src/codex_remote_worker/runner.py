@@ -38,7 +38,8 @@ def send_prompt(pipe, payload):
 def runtime_environment(settings, root: Path):
     allowed = {'systemroot', 'windir', 'comspec', 'pathext', 'userprofile', 'appdata', 'localappdata',
                'programfiles', 'programfiles(x86)', 'programdata', 'username', 'userdomain',
-               'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'ssl_cert_file', 'codex_ca_certificate'}
+               'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'ssl_cert_file', 'codex_ca_certificate',
+               'codex_windows_registered_core', 'codex_windows_sandbox_package_family'}
     env = {key: value for key, value in os.environ.items() if key.lower() in allowed}
     temp = root / 'work' / '.task_tmp'
     temp.mkdir(exist_ok=True)
@@ -55,7 +56,8 @@ def runtime_environment(settings, root: Path):
 def config_arguments(settings, root):
     env = runtime_environment(settings, root)
     private_env = {name.upper() for name in settings.provider_env} | {
-        'CODEX_HOME', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'}
+        'CODEX_HOME', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+        'CODEX_WINDOWS_REGISTERED_CORE', 'CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'}
     tools_env = {key: value for key, value in env.items() if key.upper() not in private_env}
     system = Path(os.environ.get('SystemRoot', r'C:\Windows'))
     tools_env['PATH'] = os.pathsep.join(map(str, [settings.tool_python.parent, settings.doc_converter.parent,

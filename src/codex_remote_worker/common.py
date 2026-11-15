@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
 from datetime import datetime, timezone
 import unicodedata
 import uuid
@@ -61,6 +62,26 @@ def atomic_write(path: Path, data: bytes):
 
 def write_json(path: Path, value):
     atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8"))
+
+
+def accept_directory(stage: Path, target: Path, data_root: Path):
+    """Retry bounded Windows sharing/access conflicts without replacing a target."""
+    root = data_root.resolve(strict=True)
+    source, destination = stage.resolve(strict=True), target.resolve()
+    if source == root or destination == root or not source.is_relative_to(root) or not destination.is_relative_to(root):
+        raise ValueError('Acceptance paths must remain within Worker data')
+    delays = (0, .02, .05, .1, .2, .4)
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        if target.exists():
+            raise FileExistsError('Acceptance target already exists')
+        try:
+            stage.rename(target)
+            return
+        except PermissionError as exc:
+            if getattr(exc, 'winerror', None) not in (5,32,33) or index == len(delays)-1 or not stage.exists():
+                raise
 
 
 def safe_name(name: str) -> str:
