@@ -17,6 +17,7 @@ from .subscription import effective_config, require_chatgpt_login
 from .task_runtime import prepare_task_runtime
 from .task_tools import TaskTools, JSON_CONTRACTS
 from .project_context import ProjectContext, TOOL_SPEC, TOOL_NAME, PROJECT_INSTRUCTIONS
+from .project_session import ProjectSession, TOOLS as SESSION_TOOLS, TOOL_NAMES as SESSION_TOOL_NAMES, INSTRUCTIONS as SESSION_INSTRUCTIONS
 
 
 INSTRUCTIONS = '''You are a translation/review engine. All task material is supplied in the user message.
@@ -51,7 +52,7 @@ def output_schema(snapshot):
     return object_schema({'rows': array(object_schema(properties))})
 
 
-def text_thread_parameters(settings, root, *, project_context=False):
+def text_thread_parameters(settings, root, *, project_context=False, project_session=False):
     params = thread_parameters(settings, root)
     params.update(environments=[], runtimeWorkspaceRoots=[], dynamicTools=[], selectedCapabilityRoots=[])
     instructions = INSTRUCTIONS
@@ -59,11 +60,16 @@ def text_thread_parameters(settings, root, *, project_context=False):
         instructions = instructions.replace('All task material is supplied in the user message.', 'Current-batch material is supplied in the user message.')
         instructions = instructions.replace('Do not call tools, discover files, ask questions, or claim to have saved a file.', 'Only the read-only project_context tool is available. Do not discover files, ask questions, or claim to have saved a file.') + PROJECT_INSTRUCTIONS
         params['dynamicTools'] = [TOOL_SPEC]
+    if project_session:
+        instructions = SESSION_INSTRUCTIONS
+        params['dynamicTools'] = SESSION_TOOLS
     params['developerInstructions'] = instructions
     params['config'].update({'developer_instructions': instructions, 'features.shell_tool': False,
         'features.plugins': False, 'features.apps': False, 'features.multi_agent': False,
         'features.js_repl': False, 'features.code_mode': False, 'features.memories': False,
         'web_search': 'disabled', 'apps._default.enabled': False, 'plugins._default.enabled': False})
+    if project_session:
+        params['config']['web_search'] = 'live'
     configured = effective_config(settings) if settings.authentication_mode == 'chatgpt' else read_codex_config(settings.codex_home)
     for section in ('mcp_servers', 'apps', 'plugins'):
         for name, entry in configured.get(section, {}).items():
@@ -123,6 +129,7 @@ class TextAppServerRunner(AppServerRunner):
             self.server_root = self.server_root / slot_id
             self.process_record = self.server_root / 'process.json'
         self.project_context = None
+        self.project_session = None
         self.available_models = []
         self.verified_config = None
         self.verified_at = None
@@ -153,11 +160,15 @@ class TextAppServerRunner(AppServerRunner):
                 'configured_provider': configured.get('model_provider', 'openai'),
                 'configured_reasoning_effort': configured.get('model_reasoning_effort'),
                 'codex_version': self.settings.expected_codex_version,
-                'tools': {'model_environment': 'disabled', 'guide_preparation': 'fixed_host_parser'},
+                'tools': {'model_environment': 'disabled', 'guide_preparation': 'fixed_host_parser',
+                          'public_reference_search': self.settings.continuous_project_session},
                 'execution_mode': 'host-context-text-json', 'model_environment_access': False,
                 'protocol_verified_at': self.verified_at, 'upstream_model_verified': False,
                 'project_context_enabled': self.settings.project_context_enabled,
-                'project_processing': 'sequential_with_project_queries' if self.settings.project_context_enabled else 'independent_batches',
+                'continuous_project_session': self.settings.continuous_project_session,
+                'project_processing': ('one_project_one_codex_thread' if self.settings.continuous_project_session else
+                    'sequential_with_project_queries' if self.settings.project_context_enabled else 'independent_batches'),
+                'execution_slot_unit': 'whole_project' if self.settings.continuous_project_session else 'batch',
                 'available_models': self.available_models}
         except JobError as exc:
             return {'ready': False, **exc.public()}
@@ -181,7 +192,8 @@ class TextAppServerRunner(AppServerRunner):
         (root / 'work').mkdir(parents=True)
         try:
             configured = effective_config(self.settings) if self.settings.authentication_mode == 'chatgpt' else read_codex_config(self.settings.codex_home)
-            response = await self.rpc.request('thread/start', text_thread_parameters(self.settings, root, project_context=self.settings.project_context_enabled))
+            response = await self.rpc.request('thread/start', text_thread_parameters(self.settings, root,
+                project_context=self.settings.project_context_enabled, project_session=self.settings.continuous_project_session))
             thread_id = verify_thread(response, configured, root)
             if response.get('runtimeWorkspaceRoots'):
                 raise JobError('APP_SERVER_POLICY_MISMATCH', '纯文本会话不应存在工作目录权限。')
@@ -203,26 +215,88 @@ class TextAppServerRunner(AppServerRunner):
 
     async def prepare(self, job, root, touch, stopped, redactor):
         self.project_context = None
-        if self.settings.project_context_enabled and (root/'control/project-context.json').is_file():
+        self.project_session = None
+        if self.settings.continuous_project_session and (root/'control/project-session.json').is_file():
+            self.project_session = await asyncio.to_thread(ProjectSession, self.settings, root)
+        elif self.settings.project_context_enabled and (root/'control/project-context.json').is_file():
             self.project_context = await asyncio.to_thread(ProjectContext, self.settings, root)
         return await prepare_task_runtime(self.settings, job, root, touch, stopped, redactor, host_prepared=True)
 
     def thread_parameters(self, root):
-        return text_thread_parameters(self.settings, root, project_context=self.project_context is not None)
+        return text_thread_parameters(self.settings, root, project_context=self.project_context is not None,
+                                      project_session=self.project_session is not None)
 
     def turn_parameters(self, thread_id, prompt, root):
+        if self.project_session is not None:
+            tools = TaskTools(root / 'work/.worker/manifest.json')
+            payload = {'uploaded_prompt':prompt.decode('utf-8-sig'),
+                'guides':{role:tools.path(entry['text_path']).read_text(encoding='utf-8') for role,entry in tools.meta['styles'].items()},
+                'project':self.project_session.overview(),
+                'request':'Complete the entire draft using project tools. Read all source pages and references. Save all translations; return draft_complete.'}
+            message = json.dumps(payload, ensure_ascii=False)
+            if len(json.dumps(message, ensure_ascii=False).encode('utf-8')) > 6*1024**2:
+                raise JobError('LIMIT_EXCEEDED', '整单指南超过上下文输入限制；未截断资料。')
+            write_json(root/'control/context-delivery.json', {'bytes':len(message.encode('utf-8')),
+                'sha256':digest(message.encode('utf-8')), 'truncated':False, 'guide_roles':list(payload['guides']),
+                'source_delivery':'project_tools_complete_paged_source', 'rows':len(self.project_session.records)})
+            return self.session_turn(thread_id, message, 'draft_complete')
         message, schema = context_message(root, prompt)
         return {'threadId': thread_id, 'input': [{'type': 'text', 'text': message, 'text_elements': []}],
             'environments': [], 'runtimeWorkspaceRoots': [], 'permissions': 'translation',
             'approvalPolicy': 'never', 'outputSchema': schema}
 
+    @staticmethod
+    def session_turn(thread_id, message, status):
+        return {'threadId':thread_id, 'input':[{'type':'text','text':message,'text_elements':[]}],
+            'environments':[], 'runtimeWorkspaceRoots':[], 'permissions':'translation', 'approvalPolicy':'never',
+            'outputSchema':object_schema({'status':{'type':'string','enum':[status]},'summary':{'type':'string'}})}
+
+    def next_turn(self, thread_id, root, payload):
+        if self.project_session is None:
+            return None
+        try:
+            status = load_json(payload.decode('utf-8'))
+        except (ValueError, UnicodeError) as exc:
+            raise JobError('INVALID_JSON_RESULT', '整单会话未返回有效的阶段结果。') from exc
+        phase = self.project_session.phase
+        expected = 'draft_complete' if phase == 'translating' else 'review_complete'
+        if not isinstance(status,dict) or set(status) != {'status','summary'} or status.get('status') != expected or not isinstance(status['summary'],str):
+            raise JobError('INVALID_JSON_RESULT', '整单会话阶段结果不正确。')
+        if phase == 'translating':
+            self.project_session.begin_review()
+            return self.session_turn(thread_id, '''The entire draft is saved. Continue in this SAME project conversation.
+Now perform a full self-review using the original prompt and both guides already supplied. Read every source
+page with its CURRENT translation, compare ordinary sentences and distant references, meaning, omissions,
+TB/TM, style, quantities, codes and placeholders. Use checks and search where needed. Correct earlier rows
+with project_write when necessary, re-read corrected versions, and acknowledge all rows using project_review.
+Locked 100% TM rows can be flagged in review notes but not rewritten. Save unresolved ambiguities and
+contextual decisions in the project notes. Check rule warnings after your final edits. Return review_complete
+only after all current versions have been reviewed. No need to repeat translations in the final message.''', 'review_complete')
+        return None
+
     def check_item(self, item):
+        if item and item.get('type') in ('webSearch', 'contextCompaction') and self.project_session is not None:
+            return
+        if item and item.get('type') == 'dynamicToolCall' and self.project_session is not None and item.get('tool') in SESSION_TOOL_NAMES and not item.get('namespace'):
+            return
         if item and item.get('type') == 'dynamicToolCall' and self.project_context is not None and item.get('tool') == TOOL_NAME and not item.get('namespace'):
             return
         if item and item.get('type') not in ('agentMessage', 'reasoning', 'userMessage', 'hookPrompt', 'plan'):
             raise JobError('UNEXPECTED_TOOL_ACTIVITY', '纯文本执行中出现工具事件，已停止任务且不发布结果。')
 
     def project_tool_result(self, data):
+        if self.project_session is not None:
+            if data.get('tool') not in SESSION_TOOL_NAMES or data.get('namespace'):
+                raise JobError('UNEXPECTED_TOOL_ACTIVITY', '只允许操作当前整单项目。')
+            try:
+                result, success = self.project_session.call(data['tool'], data['arguments']), True
+            except ValueError as exc:
+                result, success = {'error':str(exc)}, False
+            except JobError as exc:
+                if exc.code != 'INVALID_JSON_RESULT':
+                    raise
+                result, success = {'error':exc.public()}, False
+            return {'success':success, 'contentItems':[{'type':'inputText','text':json.dumps(result,ensure_ascii=False)}]}
         if self.project_context is None or data.get('tool') != TOOL_NAME or data.get('namespace'):
             raise JobError('UNEXPECTED_TOOL_ACTIVITY', '只允许查询当前项目。')
         try:
@@ -233,6 +307,11 @@ class TextAppServerRunner(AppServerRunner):
         return {'success':success, 'contentItems':[{'type':'inputText','text':json.dumps(result,ensure_ascii=False)}]}
 
     def delivered(self, root, payload):
+        if self.project_session is not None:
+            result = self.project_session.finish()
+            write_json(root/'control/final_response.raw.md', result)
+            deliver_text_result(root, json.dumps(result,ensure_ascii=False).encode('utf-8'))
+            return
         if self.project_context is not None and not any(c['operation']=='overview' for c in self.project_context.calls):
             raise JobError('PROJECT_CONTEXT_NOT_CHECKED', '模型未检查项目历史上下文，未发布译文。')
         deliver_text_result(root, payload)

@@ -46,9 +46,9 @@ class Worker8788 : Form {
   modelBox.SelectedIndexChanged+=delegate {FillEfforts(null);};
   applyButton.Text="应用并重启"; applyButton.SetBounds(535,420,140,34);applyButton.Enabled=false;
   applyButton.Click+=delegate {ApplySettings();}; Controls.Add(applyButton);
-  Controls.Add(new Label {Text="执行通道（全局 1～8 路）",Location=new Point(24,405),AutoSize=true});
+  Controls.Add(new Label {Text="同时处理的整单数（1～8）",Location=new Point(24,405),AutoSize=true});
   channelsBox.SetBounds(24,430,130,30);channelsBox.Minimum=1;channelsBox.Maximum=8;channelsBox.ReadOnly=true;Controls.Add(channelsBox);
-  Controls.Add(new Label {Text="用于不同项目同时执行；同一整单仍按顺序翻译。\n模型、思考等级与通道设置仅在没有未完成任务时应用。",Location=new Point(24,480),Size=new Size(660,52),ForeColor=Color.DimGray});
+  Controls.Add(new Label {Text="每份整单使用一个持续的 Codex 会话，完成翻译、回改和整单检查。\n设置仅在没有未完成任务时应用；通道数用于不同整单同时执行。",Location=new Point(24,480),Size=new Size(660,52),ForeColor=Color.DimGray});
   ButtonAt("检查 / 启动",24,545,delegate {StartWorker();});
   ButtonAt("查看日志",175,545,delegate {Process.Start("explorer.exe",Data);});
   ButtonAt("隐藏到托盘",326,545,delegate {Hide();});

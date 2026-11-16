@@ -64,6 +64,7 @@ class Settings(BaseModel):
     port: int = Field(default=8787, ge=1, le=65535)
     queue_capacity: int = Field(default=10, ge=1, le=100)
     project_context_enabled: bool = False
+    continuous_project_session: bool = False
     max_concurrent_jobs: int = Field(default=1, ge=1, le=16, strict=True)
     task_batch_concurrency: int = Field(default=1, ge=1, le=16, strict=True)
     max_file_bytes: int = Field(default=32 * 1024**2, gt=0)

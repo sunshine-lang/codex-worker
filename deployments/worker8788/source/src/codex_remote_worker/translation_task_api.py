@@ -39,9 +39,14 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
         return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
                 'semantic_review': False, 'max_segments': 10000,
+                'codex_self_review': settings.continuous_project_session,
+                'conversation_mode': 'one_project_one_thread' if settings.continuous_project_session else 'independent_batch_threads',
+                'result_publication': 'after_project_self_review' if settings.continuous_project_session else 'per_batch',
+                'execution_slot_unit': 'whole_project' if settings.continuous_project_session else 'batch',
+                'timeout_scope': 'whole_project' if settings.continuous_project_session else 'each_batch',
                 'batch_results': True, 'batch_result_contract': 'translation-task-batches/1',
                 'batch_policy': {'max_rows': policy.max_rows, 'max_chars': policy.max_chars},
-                'scheduler_version': 'bounded-concurrency/1', 'bounded_parallel_execution': True,
+                'scheduler_version': 'project-session/1' if settings.continuous_project_session else 'bounded-concurrency/1', 'bounded_parallel_execution': True,
                 'concurrency': {'max_concurrent_jobs': settings.max_concurrent_jobs,
                                 'task_batch_concurrency': settings.task_batch_concurrency}}
 

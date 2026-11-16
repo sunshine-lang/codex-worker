@@ -22,11 +22,14 @@ from .sandbox_state import capture_sandbox_state, same_sandbox_state
 def trial_settings(path):
     overrides = json.loads(path.read_text(encoding='utf-8-sig'))
     required = {'baseline_root', 'data_root', 'port', 'bind_host', 'codex_executable', 'expected_codex_version'}
-    if not required <= set(overrides) or set(overrides) - required - {'max_concurrent_jobs', 'task_batch_concurrency', 'authentication_mode', 'codex_home', 'project_context_enabled'}:
+    if not required <= set(overrides) or set(overrides) - required - {'max_concurrent_jobs', 'task_batch_concurrency', 'authentication_mode', 'codex_home', 'project_context_enabled', 'continuous_project_session'}:
         raise ValueError('Unknown trial configuration fields')
     project_context = overrides.get('project_context_enabled', False)
     if type(project_context) is not bool:
         raise ValueError('project_context_enabled must be boolean')
+    continuous = overrides.get('continuous_project_session', False)
+    if type(continuous) is not bool or (continuous and not project_context):
+        raise ValueError('continuous_project_session requires project_context_enabled')
     jobs = overrides.get('max_concurrent_jobs', 1)
     batches = overrides.get('task_batch_concurrency', 1)
     if type(jobs) is not int or type(batches) is not int or not 1 <= batches <= jobs <= 8:
@@ -63,6 +66,7 @@ def trial_settings(path):
         'bind_host': overrides['bind_host'],
         'max_concurrent_jobs': jobs, 'task_batch_concurrency': 1 if project_context else batches,
         'project_context_enabled': project_context,
+        'continuous_project_session': continuous,
         'protected_read_roots': list(dict.fromkeys([*settings.protected_read_roots, original_data, settings.codex_home]))})
     return settings
 

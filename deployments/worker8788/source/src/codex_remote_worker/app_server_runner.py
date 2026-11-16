@@ -75,6 +75,10 @@ class AppServerRunner(CodexRunner):
     def delivered(self, root, payload):
         pass
 
+    def next_turn(self, thread_id, root, payload):
+        """Optional deliberate continuation; never retries a failed/ambiguous turn."""
+        return None
+
     async def _connect(self):
         rpc = self.rpc_factory(self.settings, self.server_root, self.redactor)
         await rpc.start()
@@ -155,7 +159,7 @@ class AppServerRunner(CodexRunner):
         # Keep the daemon only when the thread was unloaded and no tool child remains.
         # A detached child must never keep editing files during host validation.
         if confirmed and unloaded and rpc.connected:
-            context=getattr(self,'project_context',None)
+            context=getattr(self,'project_session',None) or getattr(self,'project_context',None)
             if context is not None and context.calls and not rpc.runtime_processes_unchanged():
                 if rpc.adopt_project_tool_runtime():
                     write_json(self.process_record, {'process':rpc.process.metadata,'generation':self.generation,
@@ -225,7 +229,7 @@ class AppServerRunner(CodexRunner):
                 response = await rpc.request('thread/start', self.thread_parameters(root))
                 thread_id = verify_thread(response, configured, root)
                 queue = rpc.subscribe(thread_id)
-                if getattr(self, 'project_context', None) is not None:
+                if getattr(self, 'project_context', None) is not None or getattr(self, 'project_session', None) is not None:
                     rpc.tool_threads.add(thread_id)
                 execution.update(thread_id=thread_id, resolved_model_id=response['model'],
                     effective_provider=response['modelProvider'], effective_reasoning_effort=response.get('reasoningEffort'),
@@ -246,7 +250,7 @@ class AppServerRunner(CodexRunner):
                 turn_id = (result.get('turn') or {}).get('id')
                 if not turn_id:
                     raise JobError('INVALID_TRACE', 'App Server 未返回任务轮次编号。')
-                execution.update(turn_id=turn_id, prompt_delivered=True,
+                execution.update(turn_id=turn_id, turn_ids=[turn_id], prompt_delivered=True,
                     thread_start_and_submit_seconds=round(time.monotonic() - started, 3))
                 touch(execution=execution)
                 with trace_path.open('wb') as trace, error_path.open('wb') as errors:
@@ -275,13 +279,25 @@ class AppServerRunner(CodexRunner):
                             handler = getattr(self, 'project_tool_result', None)
                             if handler is None:
                                 raise JobError('UNEXPECTED_TOOL_ACTIVITY', '未配置项目查询工具。')
-                            result = await asyncio.to_thread(handler, data)
+                            handling = asyncio.create_task(asyncio.to_thread(handler, data))
+                            try:
+                                result = await asyncio.shield(handling)
+                            except asyncio.CancelledError:
+                                await handling  # Finish the host checkpoint before releasing the lane.
+                                raise
                             await rpc._write({'id': event['id'], 'result': result})
-                            execution['project_context_queries'] = len(self.project_context.calls)
+                            session = getattr(self, 'project_session', None)
+                            if session is not None:
+                                execution['project_session'] = session.progress()
+                                execution['conversation_mode'] = 'one_project_one_thread'
+                            else:
+                                execution['project_context_queries'] = len(self.project_context.calls)
                             touch(execution=execution)
                             continue
                         item = data.get('item') or {}
                         self.check_item(item)
+                        if method == 'item/completed' and item.get('type') == 'contextCompaction':
+                            execution['context_compactions'] = execution.get('context_compactions', 0)+1
                         if method == 'item/completed' and item.get('type') == 'agentMessage':
                             text = item.get('text')
                             if isinstance(text, str):
@@ -330,8 +346,28 @@ class AppServerRunner(CodexRunner):
                             payload = choices[-1].encode('utf-8')
                             if len(payload) > self.settings.max_output_bytes:
                                 raise JobError('LIMIT_EXCEEDED', '最终回答超过大小限制。')
+                            continuation = self.next_turn(thread_id, root, payload)
+                            if continuation is not None:
+                                atomic_write(root / 'control/draft_response.raw.json', payload)
+                                if stopped():
+                                    raise JobError('CANCEL_REQUESTED', '整单在最终检查前已请求停止。')
+                                if codex_config_digest(self.settings) != config_sha:
+                                    raise JobError('CODEX_CONFIG_CHANGED', '整单会话期间配置变化，未继续调用模型。')
+                                result = await rpc.request('turn/start', continuation)
+                                turn_id = (result.get('turn') or {}).get('id')
+                                if not turn_id:
+                                    raise JobError('INVALID_TRACE', 'App Server 未返回检查轮次编号。')
+                                terminal = False
+                                execution['turn_ids'].append(turn_id)
+                                execution.update(turn_id=turn_id, project_session=self.project_session.progress())
+                                final_messages.clear()
+                                touch(execution=execution, stage='project_self_review')
+                                continue
                             atomic_write(root / 'control/final_response.raw.md', payload)
                             self.delivered(root, payload)
+                            session = getattr(self, 'project_session', None)
+                            if session is not None:
+                                execution.update(project_session=session.progress(), self_review_status='completed')
                             execution.update(turn_completed=True, exit_code=0,
                                 model_turn_seconds=round(time.monotonic() - started, 3))
                             return execution

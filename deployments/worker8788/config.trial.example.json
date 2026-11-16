@@ -9,5 +9,6 @@
   "task_batch_concurrency": 1,
   "authentication_mode": "chatgpt",
   "codex_home": "C:\\CodexWorkerData-AppServer-8788\\private\\codex-home",
-  "project_context_enabled": true
+  "project_context_enabled": true,
+  "continuous_project_session": true
 }

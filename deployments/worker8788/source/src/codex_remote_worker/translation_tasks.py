@@ -184,11 +184,16 @@ def public_task(task):
     total = task['total_rows']
     finished = task['tm_rows'] + task['translated_rows']
     active = [b['job_id'] for b in task['batches'] if b.get('job_id') and b.get('status') not in ('completed','failed','cancelled','interrupted')]
+    active = list(dict.fromkeys(active))
     if task['status'] in TASK_TERMINAL:
         active = []
     return {'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
             'review_status': 'not_started', 'result_kind': 'translation_candidate',
+            'self_review_status': task.get('self_review_status', 'not_started'),
+            'conversation_mode': 'one_project_one_thread' if task.get('continuous_project_session') else 'independent_batch_threads',
+            'codex_thread_id': task.get('codex_thread_id'),
+            'session_progress': task.get('session_progress'),
             'progress': {'total_segments': total, 'tm_reused_segments': task['tm_rows'],
                          'model_required_segments': total-task['tm_rows'], 'model_translated_segments': task['translated_rows'],
                          'finished_segments': finished, 'percent': round(finished*100/total, 2) if total else 100,
@@ -251,6 +256,7 @@ class TaskManager:
                   'total_rows': len(plan['records']), 'tm_rows': len(plan['locked']), 'translated_rows': 0,
                   'batch_concurrency': 1 if self.settings.project_context_enabled else self.settings.task_batch_concurrency,
                   'project_context_enabled': self.settings.project_context_enabled,
+                  'continuous_project_session': self.settings.continuous_project_session,
                   'cursor': 0, 'batches': [{'indices': indices, 'job_id': None} for indices in plan['batches']], 'error': None}
         result = self.store.accept(record, stage, self.root/task_id, self.settings.queue_capacity)
         return result
@@ -269,14 +275,14 @@ class TaskManager:
             self.cache[task_id] = load_json((root/'plan.json').read_text(encoding='utf-8'))
         return self.cache[task_id]
 
-    def _enqueue(self, task, batch):
+    def _enqueue(self, task, batch, *, session=False):
         index = task['batches'].index(batch)
-        key = str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+str(index)))
+        key = str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+('session' if session else str(index))))
         previous = self.jobs.by_key(key)
         if previous:
             return previous
         plan = self._plan(task)
-        packet = batch_packet(plan, batch['indices'], task['task_id'])
+        packet = batch_packet(plan, plan['pending'] if session else batch['indices'], task['task_id'])
         job_id, stage = new_stage(self.settings)
         try:
             root = self.root/task['task_id']
@@ -284,7 +290,10 @@ class TaskManager:
             prompt_path = contained_file(root.resolve(), root/'input'/task['inputs']['prompt_file']['filename'])
             if file_digest(prompt_path) != task['inputs']['prompt_file']['sha256']:
                 raise JobError('INPUT_CHANGED', '翻译 Prompt 发生变化。')
-            (stage/'input/prompt_file.md').write_text(batch_prompt(prompt_path.read_text(encoding='utf-8-sig')), encoding='utf-8')
+            if session:
+                shutil.copyfile(prompt_path, stage/'input/prompt_file.md')
+            else:
+                (stage/'input/prompt_file.md').write_text(batch_prompt(prompt_path.read_text(encoding='utf-8-sig')), encoding='utf-8')
             filenames = {'source_file': 'source_file.json', 'prompt_file': 'prompt_file.md'}
             for role in ('project_style', 'general_style'):
                 entry = task['inputs'][role]
@@ -303,7 +312,9 @@ class TaskManager:
                 raise JobError('BATCH_TOO_LARGE', '生成的批次资料超过 Worker 总大小限制。')
             record = prepare_record(job_id, key, manifest, Options.model_validate(task['options']), stage,
                                     codex_config_sha256=task['codex_config_sha256'])
-            if task.get('project_context_enabled'):
+            if session:
+                write_json(stage/'control/project-session.json', {'task_id':task['task_id'],'job_id':job_id})
+            elif task.get('project_context_enabled'):
                 write_json(stage/'control/project-context.json', {'task_id':task['task_id'],'batch_index':index,'job_id':job_id})
             job, _ = self.jobs.accept(record, stage, self.settings.data_root/'jobs'/job_id, self.settings.queue_capacity)
             return job
@@ -355,10 +366,14 @@ class TaskManager:
             row['target_text'] = values[str(index)]
         write_json(root/'result.json', result)
         task.update(status='completed', stage='translation_complete', result_sha256=file_digest(root/'result.json'), completed_at=now())
+        task['result_content_sha256'] = digest(canonical(result))
         self.store.save(task)
         self.cache.pop(task['task_id'], None)
 
     async def advance(self, task):
+        if task.get('continuous_project_session'):
+            await self._advance_session(task)
+            return
         task.update(status='running')
         task.setdefault('batch_concurrency', self.settings.task_batch_concurrency)
         # Stable indices recover children accepted before the parent's job_id checkpoint.
@@ -426,6 +441,71 @@ class TaskManager:
             self.worker.wakeup.set()
         self.store.save(task)
 
+    async def _advance_session(self, task):
+        if not task['batches']:
+            task['self_review_status'] = 'not_required_all_tm'
+            await asyncio.to_thread(self._finish, task)
+            return
+        task.update(status='running', batch_concurrency=1)
+        job_id = task.get('session_job_id')
+        if not job_id:
+            try:
+                job = await asyncio.to_thread(self._enqueue, task, task['batches'][0], session=True)
+            except JobError as exc:
+                if exc.code not in ('QUEUE_FULL','MAINTENANCE'):
+                    raise
+                task['stage'] = 'waiting_for_worker'
+                self.store.save(task)
+                return
+            job_id = task['session_job_id'] = job['job_id']
+            for batch in task['batches']:
+                batch.update(job_id=job_id, status=job['status'])
+            self.store.save(task)
+            self.worker.wakeup.set()
+        job = self.jobs.get(job_id)
+        execution = job.get('execution') or {}
+        task['codex_thread_id'] = execution.get('thread_id')
+        progress = execution.get('project_session') or {}
+        task['session_progress'] = progress
+        task['translated_rows'] = progress.get('draft_segments', 0)
+        task['stage'] = {'reviewing':'project_self_review','complete':'delivery_check'}.get(progress.get('phase'), 'translating' if job['status']!='queued' else 'waiting_for_worker')
+        task['self_review_status'] = 'running' if progress.get('phase')=='reviewing' else 'not_started'
+        if job['status'] in ('failed','cancelled','interrupted'):
+            task.update(status='failed', stage='failed', error=job.get('error') or {
+                'code':'PROJECT_SESSION_INTERRUPTED','message':'整单 Codex 会话已中止，草稿保留且未自动重跑。'})
+            for batch in task['batches']:
+                batch['status'] = 'failed'
+        elif job['status'] in ('completed','needs_review'):
+            await asyncio.to_thread(self._collect_session, task, job)
+            return
+        self.store.save(task)
+
+    def _collect_session(self, task, job):
+        execution = job.get('execution') or {}
+        if (execution.get('exit_code') != 0 or execution.get('turn_completed') is not True
+                or execution.get('turn_failed') is True or execution.get('trace_complete') is not True
+                or execution.get('self_review_status') != 'completed' or not execution.get('thread_id')
+                or len(execution.get('turn_ids',[])) != 2):
+            raise JobError('EXECUTION_INVALID', '整单持续会话和最终检查未确认完成。')
+        entry = next((a for a in job.get('artifacts',[]) if a['kind']=='translation'), None)
+        if not entry:
+            raise JobError('ARTIFACT_MISSING', '整单会话缺少译文产物。')
+        root = self.settings.data_root/'jobs'/job['job_id']
+        path = contained_file(root.resolve(), root/'artifacts'/entry['filename'])
+        if path.stat().st_size != entry['bytes'] or file_digest(path) != entry['sha256']:
+            raise JobError('ARTIFACT_CHANGED', '整单译文产物校验失败。')
+        reply = load_json(path.read_text(encoding='utf-8-sig'))
+        plan = self._plan(task)
+        check_json_result(batch_packet(plan, plan['pending'], task['task_id']), reply)
+        values = {r['row_id']:r for r in reply['rows']}
+        # Publish immutable delivery partitions only after the entire project is reviewed.
+        for index,batch in enumerate(task['batches']):
+            path = self.root/task['task_id']/'results'/f'batch_{index:05d}.json'
+            write_json(path, {'rows':[values[str(i)] for i in batch['indices']]})
+            batch.update(status='completed', result_sha256=file_digest(path))
+        task.update(translated_rows=len(plan['pending']), cursor=len(task['batches']), self_review_status='completed')
+        self._finish(task)
+
     async def _loop(self):
         while not self.stopping:
             tasks = [] if (self.settings.data_root/'.maintenance.json').exists() else self.store.active()
@@ -470,4 +550,37 @@ class TaskManager:
         path = contained_file(root.resolve(), root/'result.json')
         if file_digest(path) != task['result_sha256']:
             raise JobError('ARTIFACT_CHANGED', '整单结果校验失败。', 409)
+        return path
+
+    def batch_manifest(self, task_id):
+        task = self.store.get(task_id)
+        model_rows = {i for batch in task['batches'] for i in batch['indices']}
+        batches = []
+        for index,batch in enumerate(task['batches']):
+            available = batch.get('status')=='completed' and (not task.get('continuous_project_session') or task['status']=='completed')
+            batches.append({'batch_index':index, 'row_ids':[str(i) for i in batch['indices']],
+                'job_id':batch.get('job_id'), 'available':available,
+                'sha256':batch.get('result_sha256') if available else None,
+                'result_path':f'/v1/tasks/{task_id}/batches/{index}' if available else None})
+        return {'contract':'translation-task-batches/1', 'task_id':task_id,
+                'source_sha256':task['inputs']['source_file']['sha256'], 'task':public_task(task),
+                'result_content_sha256':task.get('result_content_sha256'), 'total_segments':task['total_rows'],
+                'tm_reused_row_ids':[str(i) for i in range(task['total_rows']) if i not in model_rows],
+                'publication_policy':'after_project_self_review' if task.get('continuous_project_session') else 'per_batch',
+                'batches':batches}
+
+    def batch_result_path(self, task_id, batch_index):
+        task = self.store.get(task_id)
+        if type(batch_index) is not int or not 0<=batch_index<len(task['batches']):
+            raise JobError('BATCH_NOT_FOUND', '批次不存在。', 404)
+        batch = task['batches'][batch_index]
+        if batch.get('status')!='completed' or (task.get('continuous_project_session') and task['status']!='completed'):
+            raise JobError('BATCH_NOT_READY', '整单检查或此批次尚未完成。', 409)
+        root = self.root/task_id
+        try:
+            path = contained_file(root.resolve(), root/'results'/f'batch_{batch_index:05d}.json')
+            if file_digest(path)!=batch['result_sha256']:
+                raise JobError('ARTIFACT_CHANGED', '批次结果校验失败。', 409)
+        except OSError:
+            raise JobError('ARTIFACT_MISSING', '批次结果不可读取。', 409) from None
         return path
