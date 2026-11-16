@@ -351,7 +351,8 @@ class TaskManager:
         for index, row in enumerate(rows):
             row['target_text'] = values[str(index)]
         write_json(root/'result.json', result)
-        task.update(status='completed', stage='translation_complete', result_sha256=file_digest(root/'result.json'), completed_at=now())
+        task.update(status='completed', stage='translation_complete', result_sha256=file_digest(root/'result.json'),
+                    result_content_sha256=digest(canonical(result)), completed_at=now())
         self.store.save(task)
         self.cache.pop(task['task_id'], None)
 
@@ -461,4 +462,38 @@ class TaskManager:
         path = contained_file(root.resolve(), root/'result.json')
         if file_digest(path) != task['result_sha256']:
             raise JobError('ARTIFACT_CHANGED', '整单结果校验失败。', 409)
+        return path
+
+    def batch_manifest(self, task_id):
+        """Persistent batch ownership and coverage; safe to poll after missed updates."""
+        task = self.store.get(task_id)
+        model_rows = {i for batch in task['batches'] for i in batch['indices']}
+        batches = []
+        for index, batch in enumerate(task['batches']):
+            available = batch.get('status') == 'completed'
+            batches.append({'batch_index': index, 'row_ids': [str(i) for i in batch['indices']],
+                            'job_id': batch.get('job_id'), 'available': available,
+                            'sha256': batch.get('result_sha256') if available else None,
+                            'result_path': f'/v1/tasks/{task_id}/batches/{index}' if available else None})
+        return {'contract': 'translation-task-batches/1', 'task_id': task_id,
+                'source_sha256': task['inputs']['source_file']['sha256'],
+                'task': public_task(task), 'result_content_sha256': task.get('result_content_sha256'),
+                'total_segments': task['total_rows'],
+                'tm_reused_row_ids': [str(i) for i in range(task['total_rows']) if i not in model_rows],
+                'batches': batches}
+
+    def batch_result_path(self, task_id, batch_index):
+        task = self.store.get(task_id)
+        if type(batch_index) is not int or not 0 <= batch_index < len(task['batches']):
+            raise JobError('BATCH_NOT_FOUND', '批次不存在。', 404)
+        batch = task['batches'][batch_index]
+        if batch.get('status') != 'completed':
+            raise JobError('BATCH_NOT_READY', '此批次尚未完成。', 409)
+        root = self.root/task_id
+        try:
+            path = contained_file(root.resolve(), root/'results'/f'batch_{batch_index:05d}.json')
+            if file_digest(path) != batch['result_sha256']:
+                raise JobError('ARTIFACT_CHANGED', '批次结果校验失败，未返回译文。', 409)
+        except OSError:
+            raise JobError('ARTIFACT_MISSING', '已完成批次的结果文件不可读取。', 409) from None
         return path

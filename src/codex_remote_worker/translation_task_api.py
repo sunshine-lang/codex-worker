@@ -39,6 +39,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
         return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
                 'semantic_review': False, 'max_segments': 10000,
+                'batch_results': True, 'batch_result_contract': 'translation-task-batches/1',
                 'batch_policy': {'max_rows': policy.max_rows, 'max_chars': policy.max_chars},
                 'scheduler_version': 'bounded-concurrency/1', 'bounded_parallel_execution': True,
                 'concurrency': {'max_concurrent_jobs': settings.max_concurrent_jobs,
@@ -89,5 +90,15 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
     async def result(task_id: str):
         path = await asyncio.to_thread(app.state.translation_tasks.result_path, identifier(task_id))
         return FileResponse(path, filename=task_id+'.json', media_type='application/json', headers={'Cache-Control': 'no-store'})
+
+    @router.get('/{task_id}/batches')
+    async def batch_manifest(task_id: str):
+        value = await asyncio.to_thread(app.state.translation_tasks.batch_manifest, identifier(task_id))
+        return JSONResponse(value, headers={'Cache-Control': 'no-store'})
+
+    @router.get('/{task_id}/batches/{batch_index}')
+    async def batch_result(task_id: str, batch_index: int):
+        path = await asyncio.to_thread(app.state.translation_tasks.batch_result_path, identifier(task_id), batch_index)
+        return FileResponse(path, media_type='application/json', headers={'Cache-Control': 'no-store'})
 
     app.include_router(router)
