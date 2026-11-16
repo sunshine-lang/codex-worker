@@ -1,0 +1,904 @@
+{
+  "name": "Siemens 英中翻译｜远程 Codex Worker",
+  "description": "上传四份资料后直接运行，自动提交、续查并下载结果。同资料复用已有任务；重新翻译、取消和检查连接在高级设置中。使用 Windows 现有 Codex 配置。",
+  "data": {
+    "nodes": [
+      {
+        "id": "RemoteTranslationInputs-files",
+        "type": "genericNode",
+        "position": {
+          "x": 0,
+          "y": 0.0
+        },
+        "selected": false,
+        "data": {
+          "id": "RemoteTranslationInputs-files",
+          "type": "CustomComponent",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "general_style": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "file_path": "",
+                "fileTypes": [
+                  "md",
+                  "txt",
+                  "docx",
+                  "doc"
+                ],
+                "temp_file": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "general_style",
+                "value": "",
+                "display_name": "EC 通用准则",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "file",
+                "_input_type": "FileInput"
+              },
+              "project_style": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "file_path": "",
+                "fileTypes": [
+                  "md",
+                  "txt",
+                  "docx",
+                  "doc"
+                ],
+                "temp_file": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "project_style",
+                "value": "",
+                "display_name": "西门子风格指南",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "file",
+                "_input_type": "FileInput"
+              },
+              "prompt_file": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "file_path": "",
+                "fileTypes": [
+                  "md",
+                  "txt"
+                ],
+                "temp_file": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "prompt_file",
+                "value": "",
+                "display_name": "翻译 Prompt",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "首次提交必填；续查或取消已有任务可留空。",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "file",
+                "_input_type": "FileInput"
+              },
+              "source_file": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "file_path": "",
+                "fileTypes": [
+                  "xlsx",
+                  "csv"
+                ],
+                "temp_file": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "source_file",
+                "value": "",
+                "display_name": "待译文件",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "首次提交必填；续查或取消已有任务可留空。",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "file",
+                "_input_type": "FileInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from pathlib import Path\nfrom lfx.custom import Component\nfrom lfx.io import FileInput, Output\nfrom lfx.schema import Data\nfrom lfx.utils.file_path_security import component_file_access_scopes, enforce_local_file_access\n\n\nclass RemoteTranslationInputs(Component):\n    display_name = '01 上传原表与翻译资料'\n    description = '四份资料将发送至配置的 Windows Codex 服务。'\n    name = 'RemoteTranslationInputs'\n    icon = 'Files'\n    inputs = [\n        FileInput(name='source_file', display_name='待译文件', file_types=['xlsx', 'csv'], info='首次提交必填；续查或取消已有任务可留空。'),\n        FileInput(name='prompt_file', display_name='翻译 Prompt', file_types=['md', 'txt'], info='首次提交必填；续查或取消已有任务可留空。'),\n        FileInput(name='project_style', display_name='西门子风格指南', file_types=['md', 'txt', 'docx', 'doc']),\n        FileInput(name='general_style', display_name='EC 通用准则', file_types=['md', 'txt', 'docx', 'doc']),\n    ]\n    outputs = [Output(name='bundle', display_name='原始任务文件', method='bundle_files')]\n\n    def bundle_files(self) -> Data:\n        if not self.user_id:\n            raise ValueError('请登录 Langflow 后上传任务资料。')\n        files = {}\n        for name in ['source_file', 'prompt_file', 'project_style', 'general_style']:\n            value = getattr(self, name)\n            if not value:\n                continue\n            if isinstance(value, list):\n                if len(value) != 1:\n                    raise ValueError('每个上传框需要一份文件。')\n                value = value[0]\n            if not isinstance(value, str) or not value:\n                raise ValueError('请上传四份任务资料。')\n            path = value if Path(value).is_absolute() else self.get_full_path(value)\n            path = enforce_local_file_access(path, scope_ids=component_file_access_scopes(self))\n            if not path.is_file():\n                labels = {'source_file': '待译文件', 'prompt_file': '翻译 Prompt',\n                          'project_style': '项目风格指南', 'general_style': '通用准则'}\n                raise ValueError(f'「{labels[name]}」的文件在当前 Langflow 不存在，请重新上传或清空此绑定。')\n            files[name] = str(path)\n        return Data(data={'flow_id': str(self.graph.flow_id), 'user_id': str(self.user_id), 'files': files})\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              }
+            },
+            "description": "四份资料将发送至配置的 Windows Codex 服务。",
+            "icon": "Files",
+            "base_classes": [
+              "JSON"
+            ],
+            "display_name": "01 上传原表与翻译资料",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "JSON"
+                ],
+                "selected": "JSON",
+                "name": "bundle",
+                "display_name": "原始任务文件",
+                "method": "bundle_files",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true,
+                "hidden": false,
+                "options": null,
+                "required_inputs": null
+              }
+            ],
+            "field_order": [
+              "source_file",
+              "prompt_file",
+              "project_style",
+              "general_style"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "component_class_name": "RemoteTranslationInputs",
+              "module": "custom_components.01_",
+              "code_hash": "f0805f8e905e",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": "1.13.0"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": true,
+          "_flow_builder_registry_type": "RemoteTranslationInputs",
+          "_flow_builder_untrusted_custom": true
+        }
+      },
+      {
+        "id": "RemoteCodexTranslation-worker",
+        "type": "genericNode",
+        "position": {
+          "x": 480,
+          "y": 0.0
+        },
+        "selected": false,
+        "data": {
+          "id": "RemoteCodexTranslation-worker",
+          "type": "CustomComponent",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "bundle": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "bundle",
+                "value": "",
+                "display_name": "原始任务文件",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Data"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "action": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "自动运行",
+                  "重新翻译",
+                  "取消任务",
+                  "检查连接"
+                ],
+                "options_metadata": [],
+                "combobox": false,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "action",
+                "value": "自动运行",
+                "display_name": "高级操作",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "通常保持自动运行。重新翻译会新建任务并再次调用 Codex；操作选项会保留，续查前请切回自动运行。",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "allow_insecure_http": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "allow_insecure_http",
+                "value": false,
+                "display_name": "临时允许明文 HTTP",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "仅临时联调。开启后公网 HTTP 会明文传送服务令牌和文件；正式使用请改为 HTTPS 并关闭。",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "allow_private_http": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "allow_private_http",
+                "value": false,
+                "display_name": "允许受保护私网 HTTP",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "\"\"\"Embedded into the Langflow node; only stdlib and Langflow's installed httpx are needed.\"\"\"\nimport asyncio\nfrom contextlib import ExitStack\nimport hashlib\nimport ipaddress\nimport json\nimport os\nfrom pathlib import Path\nimport re\nimport uuid\nimport unicodedata\nfrom urllib.parse import urlsplit, urlunsplit\n\nimport httpx\n\n\nREMOTE_TERMINAL = {'completed', 'needs_review', 'failed', 'cancelled', 'interrupted'}\n\n\nclass RemoteWorkerError(Exception):\n    def __init__(self, message, *, status=None, rejected=False):\n        super().__init__(message)\n        self.status = status\n        self.rejected = rejected\n\n\ndef worker_url(value, allow_private_http=False, allow_insecure_http=False):\n    value = value.strip().rstrip('/')\n    url = urlsplit(value)\n    if url.username or url.password or url.query or url.fragment or not url.hostname:\n        raise RemoteWorkerError('服务地址不能含凭据、查询参数或片段。')\n    try:\n        url.port\n    except ValueError:\n        raise RemoteWorkerError('服务地址的端口不正确。') from None\n    allowed_http = url.hostname == 'localhost'\n    try:\n        address = ipaddress.ip_address(url.hostname)\n        allowed_http = address.is_loopback or (allow_private_http and address.is_private)\n    except ValueError:\n        pass\n    if url.scheme != 'https' and not (url.scheme == 'http' and (allowed_http or allow_insecure_http)):\n        raise RemoteWorkerError('请使用 HTTPS 或受保护私网地址；公网 HTTP 联调需明确开启“临时允许明文 HTTP”。')\n    path = url.path.rstrip('/')\n    for suffix in ['/healthz', '/v1/ready']:\n        if path.endswith(suffix):\n            path = path[:-len(suffix)]\n            break\n    return urlunsplit((url.scheme, url.netloc, path, '', ''))\n\n\ndef remote_text(value, token=''):\n    text = str(value)\n    if token:\n        text = text.replace(token, '[REDACTED]')\n    return re.sub(r'\\bsk-[A-Za-z0-9_-]{12,}', '[REDACTED]', text)\n\n\ndef remote_id(value, prefix):\n    if not isinstance(value, str) or not re.fullmatch(prefix + r'[a-zA-Z0-9_-]{1,100}', value):\n        raise RemoteWorkerError('远端返回了无效的任务或产物编号。')\n    return value\n\n\ndef local_hash(path):\n    with Path(path).open('rb') as stream:\n        return hashlib.file_digest(stream, 'sha256').hexdigest()\n\n\ndef validate_upload_files(files):\n    labels = {'source_file': '待译文件', 'prompt_file': '翻译 Prompt',\n              'project_style': '项目风格指南', 'general_style': '通用准则'}\n    if set(files) != set(labels):\n        raise RemoteWorkerError('新任务需要四份有效资料；请在第一个节点重新上传或绑定缺少的文件。')\n    seen = {}\n    for role, value in files.items():\n        path = Path(value)\n        if not path.is_file():\n            raise RemoteWorkerError(f'「{labels[role]}」的文件不可读取，请在当前 Langflow 重新上传或绑定。')\n        key = unicodedata.normalize('NFC', path.name).casefold()\n        if key in seen:\n            raise RemoteWorkerError(f'「{labels[seen[key]]}」与「{labels[role]}」的上传文件名相同：{path.name}。请检查两个上传框是否重复绑定，或调整实际文件名后重新上传。')\n        seen[key] = role\n\n\ndef save_reference(path, value):\n    path = Path(path)\n    path.parent.mkdir(parents=True, exist_ok=True)\n    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')\n    try:\n        with temporary.open('x', encoding='utf-8') as stream:\n            json.dump(value, stream, ensure_ascii=False, indent=2)\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        temporary.unlink(missing_ok=True)\n\n\nclass ReferenceLock:\n    def __init__(self, path):\n        self.stream = Path(path).open('a+b')\n        self.stream.seek(0)\n        if not self.stream.read(1):\n            self.stream.write(b'0')\n            self.stream.flush()\n        self.stream.seek(0)\n        try:\n            if os.name == 'nt':\n                import msvcrt\n                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)\n            else:\n                import fcntl\n                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n        except OSError:\n            self.stream.close()\n            raise RemoteWorkerError('这个节点正在处理另一条请求，请稍后继续查询。') from None\n\n    def close(self):\n        self.stream.close()\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, *args):\n        self.close()\n\n\ndef read_reference(path):\n    return json.loads(Path(path).read_text(encoding='utf-8')) if Path(path).exists() else None\n\n\ndef reserve_reference(path, identity, fingerprint, action):\n    path = Path(path)\n    with ReferenceLock(path.with_suffix('.lock')):\n        previous = read_reference(path)\n        reference = choose_reference(previous, identity, fingerprint, action)\n        save_reference(path, reference)\n        return reference\n\n\ndef update_reference(path, identity, key, *, only_unsubmitted=False, **fields):\n    path = Path(path)\n    with ReferenceLock(path.with_suffix('.lock')):\n        current = read_reference(path)\n        if not current or current.get('identity') != identity or current.get('request_key') != key:\n            return False\n        if only_unsubmitted and current.get('job_id'):\n            return False\n        if fields.get('job_id') and current.get('job_id') not in {None, fields['job_id']}:\n            raise RemoteWorkerError('同一提交编号返回了不同任务号，已停止覆盖记录。')\n        if current.get('job_id') and current.get('status') in REMOTE_TERMINAL and fields.get('status') not in REMOTE_TERMINAL:\n            fields.pop('status', None)\n        published = fields.pop('published', None)\n        current.update(fields)\n        if published:\n            current.setdefault('published', {}).update(published)\n        save_reference(path, current)\n        return True\n\n\ndef choose_reference(previous, identity, fingerprint, action):\n    if previous and previous.get('identity') != identity:\n        raise RemoteWorkerError('保存的任务不属于当前用户、流程或服务地址。')\n    if action in {'查询', '取消'}:\n        if not previous:\n            raise RemoteWorkerError('当前节点尚未保存远端任务。')\n        return previous\n    if previous and previous.get('status') not in REMOTE_TERMINAL:\n        if previous.get('fingerprint') != fingerprint:\n            raise RemoteWorkerError('上一任务尚未结束，请使用原资料再次运行以续查，或在高级设置取消任务后再提交不同资料。')\n        return previous\n    if previous and previous.get('fingerprint') == fingerprint and action != '重新试跑':\n        return previous\n    return {'identity': identity, 'fingerprint': fingerprint, 'request_key': str(uuid.uuid4()),\n            'job_id': None, 'status': 'submitting', 'submission_attempted': False, 'published': {},\n            'history': (previous.get('history', []) + [{k: previous.get(k) for k in ['job_id', 'request_key', 'fingerprint', 'status']}]) if previous else []}\n\n\nclass RemoteClient:\n    def __init__(self, base_url, token='', *, allow_private_http=False, allow_insecure_http=False, transport=None):\n        self.base = worker_url(base_url, allow_private_http, allow_insecure_http)\n        self.token = token\n        self.headers = {'Authorization': 'Bearer ' + token} if token else {}\n        self.http = httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False,\n            timeout=httpx.Timeout(30, connect=10, write=120))\n\n    async def close(self):\n        await self.http.aclose()\n\n    def error(self, response):\n        try:\n            payload = response.json()\n            error = payload.get('error', {}) if isinstance(payload, dict) else {}\n            detail = error.get('message', '') if isinstance(error, dict) else str(error)\n            if not detail and isinstance(payload, dict):\n                detail = payload.get('message', '')\n            if (response.status_code == 422 and isinstance(error, dict) and error.get('code') == 'INVALID_OPTIONS'\n                    and detail == '模型参数无效或包含不允许的字段。'):\n                detail = '远端仍使用旧版 Worker，请升级至 0.2.0 或更新版本。新版节点不发送模型 ID，直接使用远端 Codex 配置。'\n        except (ValueError, TypeError):\n            detail = ''\n        if response.status_code in {401, 403}:\n            detail = '服务访问令牌无效或权限不足；这里需要 Worker 令牌，不是 OpenRouter API Key。'\n        detail = remote_text(detail, self.token)[:400]\n        rejected = response.status_code in {400, 401, 403, 404, 405, 413, 415, 422, 429}\n        return RemoteWorkerError(f'远程服务 HTTP {response.status_code}：{detail or \"请求未完成\"}',\n                                 status=response.status_code, rejected=rejected)\n\n    async def request(self, method, suffix, **kwargs):\n        kwargs['headers'] = {**kwargs.pop('headers', {}), **self.headers}\n        response = await self.http.request(method, self.base + suffix, **kwargs)\n        if not 200 <= response.status_code < 300:\n            raise self.error(response)\n        try:\n            value = response.json()\n        except ValueError:\n            raise RemoteWorkerError('远端响应不是有效 JSON。') from None\n        if not isinstance(value, dict):\n            raise RemoteWorkerError('远端响应结构不正确。')\n        return value\n\n    async def probe(self):\n        # A public health check must not send a token or upload any task material.\n        response = await self.http.get(self.base + '/healthz', timeout=10)\n        if response.status_code != 200:\n            raise self.error(response)\n        try:\n            payload = response.json()\n        except ValueError:\n            raise RemoteWorkerError('健康接口没有返回 JSON，请核对服务地址和代理路径。') from None\n        if not isinstance(payload, dict) or payload.get('status') != 'alive':\n            raise RemoteWorkerError('健康接口响应不符合 Worker 约定，请核对服务地址。')\n        result = {'reachable': True, 'authenticated': None, 'ready': None, 'service_url': self.base,\n                  'model_called': False, 'http_plaintext': urlsplit(self.base).scheme == 'http'}\n        if not self.token:\n            result['message'] = '网络已连通。请填写服务访问令牌，再检查鉴权和执行环境。'\n            return result\n        response = await self.http.get(self.base + '/v1/ready', headers=self.headers, timeout=15)\n        if response.status_code not in {200, 503}:\n            raise self.error(response)\n        try:\n            payload = response.json()\n        except ValueError:\n            raise RemoteWorkerError('就绪接口没有返回 JSON。') from None\n        if not isinstance(payload, dict) or type(payload.get('ready')) is not bool:\n            raise RemoteWorkerError('就绪响应结构不正确，不能判断服务是否可接收任务。')\n        result.update(authenticated=True, ready=payload['ready'], codex_version=payload.get('codex_version'),\n                      code=payload.get('code'), message=remote_text(payload.get('message', ''), self.token))\n        if response.status_code == 503:\n            result['ready'] = False\n        return result\n\n    async def submit(self, files, options, key):\n        # A lost response can be retried because the caller persisted this exact key first.\n        for attempt in range(2):\n            try:\n                with ExitStack() as stack:\n                    uploads = {role: (Path(path).name, stack.enter_context(Path(path).open('rb')))\n                               for role, path in files.items()}\n                    response = await self.request('POST', '/v1/jobs', files=uploads,\n                        data={'options': json.dumps(options)}, headers={'Idempotency-Key': key})\n                    remote_id(response.get('job_id'), 'job_')\n                    if response.get('status') not in REMOTE_TERMINAL | {'queued', 'running', 'checking', 'cancelling'}:\n                        raise RemoteWorkerError('提交响应的任务状态无效；请保留相同资料并选择“提交或继续”找回任务。')\n                    return response\n            except RemoteWorkerError as exc:\n                if attempt:\n                    exc.rejected = False  # An earlier lost response may already have created the task.\n                raise\n            except (httpx.TransportError, httpx.TimeoutException):\n                if attempt:\n                    raise RemoteWorkerError('提交响应未收到，任务可能已被接受；保留资料并选择“提交或继续”。') from None\n                await asyncio.sleep(.2)\n\n    async def status(self, job_id):\n        remote_id(job_id, 'job_')\n        value = await self.request('GET', f'/v1/jobs/{job_id}')\n        if value.get('job_id') != job_id or value.get('status') not in REMOTE_TERMINAL | {'queued', 'running', 'checking', 'cancelling'}:\n            raise RemoteWorkerError('远端任务状态或编号不一致。')\n        return value\n\n    async def cancel(self, job_id):\n        remote_id(job_id, 'job_')\n        return await self.request('POST', f'/v1/jobs/{job_id}/cancel')\n\n    async def download(self, job_id, entry, directory):\n        remote_id(job_id, 'job_')\n        artifact_id = remote_id(entry.get('id'), 'artifact_')\n        expected_path = f'/v1/jobs/{job_id}/artifacts/{artifact_id}'\n        if entry.get('download_path') != expected_path:\n            raise RemoteWorkerError('远端产物路径不属于当前任务。')\n        name = entry.get('filename', '')\n        if (not isinstance(name, str) or not name or name in {'.', '..'} or len(name) > 200\n                or re.search(r'[<>:\"/\\\\|?*\\x00-\\x1f]', name) or name[-1] in {' ', '.'}):\n            raise RemoteWorkerError('远端产物文件名不安全。')\n        size = entry.get('bytes')\n        sha = entry.get('sha256', '')\n        if (type(size) is not int or not 0 <= size <= 64 * 1024**2\n                or not isinstance(sha, str) or not re.fullmatch('[a-f0-9]{64}', sha)):\n            raise RemoteWorkerError('远端产物大小或哈希无效。')\n        directory = Path(directory)\n        directory.mkdir(parents=True, exist_ok=True)\n        target = directory / (artifact_id + '_' + name)\n        if target.is_file() and not target.is_symlink() and target.stat().st_size == size and local_hash(target) == sha:\n            return target\n        temp = target.with_name(target.name + '.' + uuid.uuid4().hex + '.partial')\n        received, checksum = 0, hashlib.sha256()\n        try:\n            async with self.http.stream('GET', self.base + expected_path, headers=self.headers) as response:\n                if response.status_code != 200:\n                    await response.aread()\n                    raise self.error(response)\n                with temp.open('xb') as stream:\n                    async for chunk in response.aiter_bytes():\n                        received += len(chunk)\n                        if received > size:\n                            raise RemoteWorkerError('下载文件超过声明大小。')\n                        checksum.update(chunk)\n                        stream.write(chunk)\n                    stream.flush()\n                    os.fsync(stream.fileno())\n            if received != size or checksum.hexdigest() != sha:\n                raise RemoteWorkerError('下载文件校验失败；可继续查询并重新下载，不需要重新翻译。')\n            os.replace(temp, target)\n            return target\n        finally:\n            temp.unlink(missing_ok=True)\n\n\nfrom lfx.custom import Component\nfrom lfx.io import HandleInput, StrInput, SecretStrInput, DropdownInput, IntInput, BoolInput, Output\nfrom lfx.schema import Message\nfrom lfx.services.deps import get_storage_service, get_settings_service, session_scope\nfrom lfx.utils.file_path_security import component_file_access_scopes, enforce_local_file_access\n\n\nclass RemoteCodexTranslation(Component):\n    display_name = '02 远程 Codex · 自主翻译'\n    description = '上传资料后直接运行：自动提交、续查或取回已有结果。重新翻译、取消和连接诊断在高级设置中；使用远端 Codex 现有配置。'\n    name = 'RemoteCodexTranslation'\n    icon = 'Server'\n    inputs = [\n        HandleInput(name='bundle', display_name='原始任务文件', input_types=['Data'], required=False),\n        StrInput(name='service_url', display_name='Windows 服务地址', value='', required=True),\n        SecretStrInput(name='service_token', display_name='服务访问令牌', required=False,\n            info='填写 Windows Worker 的访问令牌，不是 OpenRouter Key；留空仅能检查网络。'),\n        DropdownInput(name='action', display_name='高级操作', options=['自动运行', '重新翻译', '取消任务', '检查连接'],\n            value='自动运行', advanced=True,\n            info='通常保持自动运行。重新翻译会新建任务并再次调用 Codex；操作选项会保留，续查前请切回自动运行。'),\n        IntInput(name='timeout_seconds', display_name='远端执行时限（秒）', value=1800, advanced=True),\n        IntInput(name='wait_seconds', display_name='本次等待（秒）', value=900, advanced=True,\n            info='等待结束会保留远端任务；再次运行即可继续查看和取回结果。'),\n        StrInput(name='langflow_public_url', display_name='Langflow 对外地址（可选）', value='', advanced=True,\n            info='留空使用同源下载路径；反向代理有路径前缀时请填写完整基址。'),\n        BoolInput(name='allow_private_http', display_name='允许受保护私网 HTTP', value=False, advanced=True),\n        BoolInput(name='allow_insecure_http', display_name='临时允许明文 HTTP', value=False, advanced=True,\n            info='仅临时联调。开启后公网 HTTP 会明文传送服务令牌和文件；正式使用请改为 HTTPS 并关闭。'),\n    ]\n    outputs = [Output(name='result', display_name='译文、检查与 Trace', method='run_remote')]\n\n    async def publish_file(self, path, filename):\n        from fastapi import UploadFile\n        from langflow.api.v2.files import upload_user_file\n        from langflow.services.database.models.user.crud import get_user_by_id\n        async with session_scope() as session:\n            user = await get_user_by_id(session, self.user_id)\n            with path.open('rb') as stream:\n                result = await upload_user_file(file=UploadFile(filename=filename, file=stream, size=path.stat().st_size),\n                    session=session, current_user=user, storage_service=get_storage_service(),\n                    settings_service=get_settings_service(), append=False)\n            return {'id': str(result.id), 'path': result.path}\n\n    async def run_remote(self) -> Message:\n        token = self.service_token.get_secret_value() if hasattr(self.service_token, 'get_secret_value') else str(self.service_token or '')\n        client, reference, state_path, submit_lock = None, None, None, None\n        action = {'自动运行': '提交或继续', '重新翻译': '重新试跑', '取消任务': '取消'}.get(self.action, self.action)\n        try:\n            client = RemoteClient(str(self.service_url), token, allow_private_http=bool(self.allow_private_http),\n                                  allow_insecure_http=bool(self.allow_insecure_http))\n            if action == '检查连接':\n                check = await client.probe()\n                lines = ['网络：已连通。']\n                if check['authenticated']:\n                    lines += ['服务令牌：鉴权通过。', '执行环境：' + ('已就绪。' if check['ready'] else '未就绪。')]\n                    if check.get('codex_version'):\n                        lines.append('Codex 版本：' + remote_text(check['codex_version'], token))\n                else:\n                    lines.append('鉴权和执行环境：未检查，请填写服务访问令牌后再检查。')\n                if check['authenticated'] and check.get('message'):\n                    lines.append(check['message'])\n                if check['http_plaintext']:\n                    lines.append('当前为 HTTP 明文连接；令牌和资料会明文传输。')\n                lines.append('本次未上传资料、未创建翻译任务，也未调用模型。')\n                self.status = '连接检查完成' if check['ready'] is not False else '网络已连通，执行环境未就绪'\n                return Message(text='\\n\\n'.join(lines))\n            query_only = action in {'查询', '取消'}\n            if action not in {'提交或继续', '重新试跑', '查询', '取消'}:\n                raise RemoteWorkerError('请选择有效的本次操作。')\n            if not token:\n                raise RemoteWorkerError('请先填写服务访问令牌，可使用“检查连接”确认鉴权。')\n            if not self.user_id or not self.graph.flow_id:\n                raise RemoteWorkerError('请在已保存的 Langflow 流程中运行此节点。')\n            if not 60 <= int(self.timeout_seconds) <= 7200 or not 0 <= int(self.wait_seconds) <= 7200:\n                raise RemoteWorkerError('执行时限须为 60–7200 秒，本次等待须为 0–7200 秒。')\n            origin = str(self.langflow_public_url or '').rstrip('/')\n            if origin:\n                parsed = urlsplit(origin)\n                if parsed.scheme not in {'https', 'http'} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:\n                    raise RemoteWorkerError('Langflow 对外地址必须为无凭据的 HTTP(S) 基址。')\n            scope = component_file_access_scopes(self)\n            files = {}\n            if not query_only:\n                bundle = getattr(getattr(self, 'bundle', None), 'data', {})\n                if bundle and (bundle.get('user_id') != str(self.user_id) or bundle.get('flow_id') != str(self.graph.flow_id)):\n                    raise RemoteWorkerError('资料必须来自当前用户和当前流程的第一个节点。')\n                files = {role: enforce_local_file_access(path, scope_ids=scope) for role, path in bundle.get('files', {}).items()}\n                if files:\n                    validate_upload_files(files)\n            options = {'timeout_seconds': int(self.timeout_seconds)}\n            identity = {'user_id': str(self.user_id), 'flow_id': str(self.graph.flow_id), 'node_id': str(self._id), 'service': client.base}\n            identity_hash = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()\n            root = enforce_local_file_access(get_storage_service().build_full_path(str(self.user_id), 'codex_remote/' + identity_hash), scope_ids=scope)\n            root.mkdir(parents=True, exist_ok=True)\n            state_path = root / 'reference.json'\n            previous = read_reference(state_path)\n            if previous and previous.get('identity') != identity:\n                raise RemoteWorkerError('保存的任务不属于当前用户、流程或服务地址。')\n            if not files and not query_only and (not previous or action == '重新试跑'):\n                raise RemoteWorkerError('首次运行或重新翻译需要四份有效资料，请在第一个节点上传。')\n            fingerprint = previous.get('fingerprint', '') if previous else ''\n            if files:\n                fingerprint = hashlib.sha256(json.dumps({'options': options,\n                    'files': {role: {'name': Path(path).name, 'sha256': await asyncio.to_thread(local_hash, path)} for role, path in files.items()}},\n                    sort_keys=True, ensure_ascii=False).encode()).hexdigest()\n            cached_job = None\n            if previous and previous.get('job_id') and action != '取消':\n                cached_job = await client.status(previous['job_id'])\n                if not update_reference(state_path, identity, previous['request_key'], status=cached_job['status']):\n                    raise RemoteWorkerError('另一请求已更新当前任务，请再次运行以读取最新记录。')\n            reference = reserve_reference(state_path, identity, fingerprint, action)\n            submitted_now = False\n            if not reference.get('job_id'):\n                if query_only or not files:\n                    if reference.get('status') == 'failed':\n                        return Message(text='上次提交尚未创建远端任务。修正令牌、资料或服务配置，提供四份资料后再次运行。')\n                    return Message(text='上次提交尚未收到任务编号。请恢复相同的四份资料和参数，再次运行可按原提交编号找回任务；当前不能确认已取消。')\n                submit_lock = ReferenceLock(root / 'submit.lock')\n                current = read_reference(state_path)\n                if current.get('request_key') != reference['request_key']:\n                    raise RemoteWorkerError('当前提交记录已变化，请再次运行。')\n                attempted_before = current.get('submission_attempted', True)\n                # Missing markers on old references are treated as uncertain submissions.\n                if not attempted_before:\n                    self.status = '正在检查连接与执行环境'\n                    try:\n                        check = await client.probe()\n                        if check['ready'] is not True:\n                            raise RemoteWorkerError('执行环境尚未就绪：' + (check.get('message') or '请检查 Windows Worker 自检结果。'))\n                    except (RemoteWorkerError, httpx.TransportError, asyncio.CancelledError):\n                        update_reference(state_path, identity, reference['request_key'], status='failed', only_unsubmitted=True)\n                        raise\n                self.status = '正在提交原始资料'\n                if not update_reference(state_path, identity, reference['request_key'], submission_attempted=True):\n                    raise RemoteWorkerError('当前提交记录已变化，请再次运行。')\n                try:\n                    submitted = await client.submit(files, options, reference['request_key'])\n                except RemoteWorkerError as exc:\n                    if exc.rejected and not attempted_before:\n                        update_reference(state_path, identity, reference['request_key'], status='failed', submission_attempted=False, only_unsubmitted=True)\n                    elif exc.rejected:\n                        exc.rejected = False\n                    raise\n                submitted_now = not submitted.get('reused', False)\n                reference.update(job_id=submitted['job_id'], status=submitted['status'])\n                update_reference(state_path, identity, reference['request_key'], job_id=submitted['job_id'], status=submitted['status'])\n                submit_lock.close()\n                submit_lock = None\n            job_id = reference['job_id']\n            if action == '取消':\n                await client.cancel(job_id)\n                cached_job = None\n            deadline = asyncio.get_running_loop().time() + (0 if query_only else int(self.wait_seconds))\n            while True:\n                job = cached_job if cached_job and cached_job['job_id'] == job_id else await client.status(job_id)\n                cached_job = None\n                update_reference(state_path, identity, reference['request_key'], status=job['status'])\n                self.status = f\"{job_id}：{job['status']}\"\n                if job['status'] in REMOTE_TERMINAL or asyncio.get_running_loop().time() >= deadline:\n                    break\n                await asyncio.sleep(3)\n            labels = {'completed': '文件已生成，程序检查通过', 'needs_review': '文件已生成，需复核',\n                      'failed': '任务失败', 'cancelled': '已取消', 'interrupted': '任务中断',\n                      'queued': '排队中', 'running': '执行中', 'checking': '检查中', 'cancelling': '取消处理中，尚未确认停止'}\n            links, attachments = [], []\n            for entry in job.get('artifacts', []):\n                path = await client.download(job_id, entry, root / job_id)\n                saved = reference.setdefault('published', {}).get(entry['id'])\n                if saved:\n                    existing = enforce_local_file_access(self.get_full_path(saved['path']), scope_ids=scope)\n                    if not existing.is_file() or await asyncio.to_thread(local_hash, existing) != entry['sha256']:\n                        saved = None\n                if saved is None:\n                    saved = await self.publish_file(path, entry['filename'])\n                    reference['published'][entry['id']] = saved\n                    update_reference(state_path, identity, reference['request_key'], published={entry['id']: saved})\n                url = origin + '/api/v2/files/' + saved['id']\n                label = entry['filename'].replace('[', '\\\\[').replace(']', '\\\\]')\n                links.append(f\"[{label}]({url})\")\n                attachments.append(str(self.get_full_path(saved['path'])))\n            error = job.get('error') or {}\n            message = f\"{labels[job['status']]}。任务编号：`{job_id}`。\"\n            if not submitted_now and action != '取消':\n                if job['status'] in {'completed', 'needs_review'}:\n                    message += '\\n\\n已取回已有任务的结果，本次未重新翻译。'\n                elif job['status'] in REMOTE_TERMINAL:\n                    message += '\\n\\n这是已有任务的状态，本次未重新翻译。确认需要重跑时，在高级设置选择“重新翻译”。'\n                else:\n                    message += '\\n\\n正在继续已有任务，本次未重复提交。'\n            if action == '重新试跑':\n                message += '\\n\\n续查请将高级操作切回“自动运行”；保留“重新翻译”会在任务结束后再次新建任务。'\n            if error.get('message'):\n                message += '\\n\\n' + remote_text(error['message'], token)\n            if job['status'] not in REMOTE_TERMINAL:\n                message += '\\n\\n任务引用已保存。在自动运行模式下再次点击运行即可续查；本次等待结束不会自动取消远端任务。'\n            if links:\n                message += '\\n\\n' + '\\n\\n'.join(links)\n            if job['status'] in {'completed', 'needs_review'}:\n                message += '\\n\\n程序检查不代表语言质量已通过独立审校。'\n            return Message(text=message, files=attachments)\n        except asyncio.CancelledError:\n            if reference and reference.get('job_id'):\n                async def request_cancel():\n                    try:\n                        await client.cancel(reference['job_id'])\n                        job = await client.status(reference['job_id'])\n                        update_reference(state_path, identity, reference['request_key'], status=job['status'])\n                    except Exception:\n                        update_reference(state_path, identity, reference['request_key'], cancel_unconfirmed=True)\n                try:\n                    await asyncio.shield(asyncio.wait_for(request_cancel(), 10))\n                except (Exception, asyncio.CancelledError):\n                    pass\n            raise\n        except (RemoteWorkerError, httpx.TransportError) as exc:\n            message = remote_text(str(exc), token)\n            self.status = '连接或操作未完成'\n            if reference:\n                job_id = reference.get('job_id')\n                if not job_id and getattr(exc, 'rejected', False):\n                    message += '\\n\\n提交被拒绝，未取得任务号。修正后再次运行即可重试。'\n                else:\n                    message += f\"\\n\\n任务编号：`{job_id or '尚未取得'}`。任务引用已保留，请保持资料和参数一致，在自动运行模式下再次运行。\"\n            return Message(text=message)\n        finally:\n            if submit_lock:\n                submit_lock.close()\n            if client:\n                await client.close()\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "langflow_public_url": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "langflow_public_url",
+                "value": "",
+                "display_name": "Langflow 对外地址（可选）",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "留空使用同源下载路径；反向代理有路径前缀时请填写完整基址。",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "service_token": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "service_token",
+                "value": "",
+                "display_name": "服务访问令牌",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [],
+                "dynamic": false,
+                "info": "填写 Windows Worker 的访问令牌，不是 OpenRouter Key；留空仅能检查网络。",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "service_url": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "service_url",
+                "value": "",
+                "display_name": "Windows 服务地址",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "timeout_seconds": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "timeout_seconds",
+                "value": 1800,
+                "display_name": "远端执行时限（秒）",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "wait_seconds": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "wait_seconds",
+                "value": 900,
+                "display_name": "本次等待（秒）",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "等待结束会保留远端任务；再次运行即可继续查看和取回结果。",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              }
+            },
+            "description": "上传资料后直接运行：自动提交、续查或取回已有结果。重新翻译、取消和连接诊断在高级设置中；使用远端 Codex 现有配置。",
+            "icon": "Server",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "02 远程 Codex · 自主翻译",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "result",
+                "display_name": "译文、检查与 Trace",
+                "method": "run_remote",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true,
+                "hidden": false,
+                "options": null,
+                "required_inputs": null
+              }
+            ],
+            "field_order": [
+              "bundle",
+              "service_url",
+              "service_token",
+              "action",
+              "timeout_seconds",
+              "wait_seconds",
+              "langflow_public_url",
+              "allow_private_http",
+              "allow_insecure_http"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "component_class_name": "RemoteCodexTranslation",
+              "module": "custom_components.02__codex__",
+              "code_hash": "7334282420ea",
+              "dependencies": {
+                "total_dependencies": 4,
+                "dependencies": [
+                  {
+                    "name": "httpx",
+                    "version": "0.28.1"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": "1.13.0"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.139.2"
+                  },
+                  {
+                    "name": "langflow",
+                    "version": "1.13.0"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": true,
+          "_flow_builder_registry_type": "RemoteCodexTranslation",
+          "_flow_builder_untrusted_custom": true
+        }
+      },
+      {
+        "id": "ChatOutput-delivery",
+        "type": "genericNode",
+        "position": {
+          "x": 960,
+          "y": 0.0
+        },
+        "selected": false,
+        "data": {
+          "id": "ChatOutput-delivery",
+          "type": "ChatOutput",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "input_value": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "Inputs",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Data",
+                  "JSON",
+                  "DataFrame",
+                  "Table",
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Message to be passed as output.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "clean_data": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "clean_data",
+                "value": true,
+                "display_name": "Basic Clean Data",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Whether to clean data before converting to string.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from collections.abc import Generator\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, HandleInput, MessageTextInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.schema.properties import Source\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import (\n    MESSAGE_SENDER_AI,\n    MESSAGE_SENDER_NAME_AI,\n    MESSAGE_SENDER_USER,\n)\n\n\nclass ChatOutput(ChatComponent):\n    display_name = \"Chat Output\"\n    description = \"Display a chat message in the Playground.\"\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"ChatOutput\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"Inputs\",\n            info=\"Message to be passed as output.\",\n            input_types=[\"Data\", \"JSON\", \"DataFrame\", \"Table\", \"Message\"],\n            required=True,\n        ),\n        BoolInput(\n            name=\"should_store_message\",\n            display_name=\"Store Messages\",\n            info=\"Store the message in the history.\",\n            value=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"sender\",\n            display_name=\"Sender Type\",\n            options=[MESSAGE_SENDER_AI, MESSAGE_SENDER_USER],\n            value=MESSAGE_SENDER_AI,\n            advanced=True,\n            info=\"Type of sender.\",\n        ),\n        MessageTextInput(\n            name=\"sender_name\",\n            display_name=\"Sender Name\",\n            info=\"Name of the sender.\",\n            value=MESSAGE_SENDER_NAME_AI,\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"session_id\",\n            display_name=\"Session ID\",\n            info=\"The session ID of the chat. If empty, the current session ID parameter will be used.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"data_template\",\n            display_name=\"Data Template\",\n            value=\"{text}\",\n            advanced=True,\n            info=\"Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.\",\n        ),\n        BoolInput(\n            name=\"clean_data\",\n            display_name=\"Basic Clean Data\",\n            value=True,\n            advanced=True,\n            info=\"Whether to clean data before converting to string.\",\n        ),\n    ]\n    outputs = [\n        Output(\n            display_name=\"Output Message\",\n            name=\"message\",\n            method=\"message_response\",\n        ),\n    ]\n\n    def _build_source(self, id_: str | None, display_name: str | None, source: str | None) -> Source:\n        source_dict = {}\n        if id_:\n            source_dict[\"id\"] = id_\n        if display_name:\n            source_dict[\"display_name\"] = display_name\n        if source:\n            # Handle case where source is a ChatOpenAI object\n            if hasattr(source, \"model_name\"):\n                source_dict[\"source\"] = source.model_name\n            elif hasattr(source, \"model\"):\n                source_dict[\"source\"] = str(source.model)\n            else:\n                source_dict[\"source\"] = str(source)\n        return Source(**source_dict)\n\n    async def message_response(self) -> Message:\n        # First convert the input to string if needed\n        text = self.convert_to_string()\n\n        # Get source properties\n        source, _, display_name, source_id = self.get_properties_from_source_component()\n\n        # Create or use existing Message object\n        if isinstance(self.input_value, Message) and not self.is_connected_to_chat_input():\n            message = self.input_value\n            # Update message properties\n            message.text = text\n            # Preserve existing session_id from the incoming message if it exists\n            existing_session_id = message.session_id\n        else:\n            message = Message(text=text)\n            existing_session_id = None\n\n        # Set message properties\n        message.sender = self.sender\n        message.sender_name = self.sender_name\n        # Preserve session_id from incoming message, or use component/graph session_id\n        message.session_id = (\n            self.session_id or existing_session_id or (self.graph.session_id if hasattr(self, \"graph\") else None) or \"\"\n        )\n        message.context_id = self.context_id\n        message.flow_id = self.graph.flow_id if hasattr(self, \"graph\") else None\n        message.properties.source = self._build_source(source_id, display_name, source)\n\n        # Store message if needed\n        if message.session_id and self.should_store_message:\n            stored_message = await self.send_message(message)\n            self.message.value = stored_message\n            message = stored_message\n\n        # Set accumulated token usage from all upstream LLM vertices.\n        # This must happen AFTER send_message() because streaming captures\n        # usage from chunks and would overwrite accumulated totals.\n        if hasattr(self, \"_vertex\") and self._vertex is not None:\n            accumulated_usage = self._vertex._accumulate_upstream_token_usage()  # noqa: SLF001\n            if accumulated_usage:\n                message.properties.usage = accumulated_usage\n                if self.should_store_message and message.get_id():\n                    message = await self._update_stored_message(message)\n                    await self._send_message_event(message, id_=message.get_id())\n\n        self.status = message\n        return message\n\n    def _serialize_data(self, data: Data) -> str:\n        \"\"\"Serialize Data object to JSON string.\"\"\"\n        # Convert data.data to JSON-serializable format\n        serializable_data = jsonable_encoder(data.data)\n        # Serialize with orjson, enabling pretty printing with indentation\n        json_bytes = orjson.dumps(serializable_data, option=orjson.OPT_INDENT_2)\n        # Convert bytes to string and wrap in Markdown code blocks\n        return \"```json\\n\" + json_bytes.decode(\"utf-8\") + \"\\n```\"\n\n    def _validate_input(self) -> None:\n        \"\"\"Validate the input data and raise ValueError if invalid.\"\"\"\n        if self.input_value is None:\n            msg = \"Input data cannot be None\"\n            raise ValueError(msg)\n        if isinstance(self.input_value, list) and not all(\n            isinstance(item, Message | Data | DataFrame | str) for item in self.input_value\n        ):\n            invalid_types = [\n                type(item).__name__\n                for item in self.input_value\n                if not isinstance(item, Message | Data | DataFrame | str)\n            ]\n            msg = f\"Expected Data or DataFrame or Message or str, got {invalid_types}\"\n            raise TypeError(msg)\n        if not isinstance(\n            self.input_value,\n            Message | Data | DataFrame | str | list | Generator | type(None),\n        ):\n            type_name = type(self.input_value).__name__\n            msg = f\"Expected Data or DataFrame or Message or str, Generator or None, got {type_name}\"\n            raise TypeError(msg)\n\n    def convert_to_string(self) -> str | Generator[Any, None, None]:\n        \"\"\"Convert input data to string with proper error handling.\"\"\"\n        self._validate_input()\n        clean_data: bool = getattr(self, \"clean_data\", False)\n        if isinstance(self.input_value, list):\n            return \"\\n\".join([safe_convert(item, clean_data=clean_data) for item in self.input_value])\n        if isinstance(self.input_value, Generator):\n            return self.input_value\n        return safe_convert(self.input_value, clean_data=clean_data)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "context_id": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "context_id",
+                "value": "",
+                "display_name": "Context ID",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "data_template": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "data_template",
+                "value": "{text}",
+                "display_name": "Data Template",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "sender": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "Machine",
+                  "User"
+                ],
+                "options_metadata": [],
+                "combobox": false,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "sender",
+                "value": "Machine",
+                "display_name": "Sender Type",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Type of sender.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "sender_name": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "sender_name",
+                "value": "AI",
+                "display_name": "Sender Name",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Name of the sender.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "session_id": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "session_id",
+                "value": "",
+                "display_name": "Session ID",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The session ID of the chat. If empty, the current session ID parameter will be used.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "should_store_message": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "should_store_message",
+                "value": true,
+                "display_name": "Store Messages",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Store the message in the history.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              }
+            },
+            "description": "Display a chat message in the Playground.",
+            "icon": "MessagesSquare",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "Chat Output",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "minimized": true,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "message",
+                "display_name": "Output Message",
+                "method": "message_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true,
+                "hidden": false,
+                "options": null,
+                "required_inputs": null
+              }
+            ],
+            "field_order": [
+              "input_value",
+              "should_store_message",
+              "sender",
+              "sender_name",
+              "session_id",
+              "context_id",
+              "data_template",
+              "clean_data"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "component_class_name": "ChatOutput",
+              "module": "custom_components.chat_output",
+              "code_hash": "0aab1c78e1dc",
+              "dependencies": {
+                "total_dependencies": 3,
+                "dependencies": [
+                  {
+                    "name": "orjson",
+                    "version": "3.11.9"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.139.2"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": "1.13.0"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": true
+        }
+      }
+    ],
+    "edges": [
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "CustomComponent",
+            "id": "RemoteTranslationInputs-files",
+            "name": "bundle",
+            "output_types": [
+              "JSON"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "bundle",
+            "id": "RemoteCodexTranslation-worker",
+            "inputTypes": [
+              "Data"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "reactflow__edge-RemoteTranslationInputs-files{œdataTypeœ:œCustomComponentœ,œidœ:œRemoteTranslationInputs-filesœ,œnameœ:œbundleœ,œoutput_typesœ:[œJSONœ]}-RemoteCodexTranslation-worker{œfieldNameœ:œbundleœ,œidœ:œRemoteCodexTranslation-workerœ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "RemoteTranslationInputs-files",
+        "sourceHandle": "{œdataTypeœ:œCustomComponentœ,œidœ:œRemoteTranslationInputs-filesœ,œnameœ:œbundleœ,œoutput_typesœ:[œJSONœ]}",
+        "target": "RemoteCodexTranslation-worker",
+        "targetHandle": "{œfieldNameœ:œbundleœ,œidœ:œRemoteCodexTranslation-workerœ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "CustomComponent",
+            "id": "RemoteCodexTranslation-worker",
+            "name": "result",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "ChatOutput-delivery",
+            "inputTypes": [
+              "Data",
+              "JSON",
+              "DataFrame",
+              "Table",
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "reactflow__edge-RemoteCodexTranslation-worker{œdataTypeœ:œCustomComponentœ,œidœ:œRemoteCodexTranslation-workerœ,œnameœ:œresultœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-delivery{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-deliveryœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "RemoteCodexTranslation-worker",
+        "sourceHandle": "{œdataTypeœ:œCustomComponentœ,œidœ:œRemoteCodexTranslation-workerœ,œnameœ:œresultœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "ChatOutput-delivery",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-deliveryœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}"
+      }
+    ],
+    "viewport": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1
+    }
+  }
+}

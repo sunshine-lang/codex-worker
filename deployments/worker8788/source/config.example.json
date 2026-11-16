@@ -1,0 +1,19 @@
+{
+  "data_root": "D:\\CodexWorkerData",
+  "codex_executable": "C:\\CodexRuntime\\bin\\codex.exe",
+  "codex_home": "C:\\Users\\CodexWorker\\.codex",
+  "expected_codex_version": "0.166.0-alpha.5.1",
+  "tool_python": "C:\\CodexRemoteWorker\\.venv\\Scripts\\python.exe",
+  "doc_converter": "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+  "tool_read_roots": [
+    "C:\\CodexRemoteWorker\\.venv",
+    "C:\\Python312",
+    "C:\\CodexRuntime",
+    "C:\\Program Files\\LibreOffice"
+  ],
+  "windows_sandbox": "elevated",
+  "bind_host": "127.0.0.1",
+  "port": 8787,
+  "queue_capacity": 10,
+  "min_free_bytes": 1073741824
+}

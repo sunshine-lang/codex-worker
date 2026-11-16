@@ -1,0 +1,60 @@
+Codex Worker：为另一台服务器快速配置标准 Windows 用户
+====================================================
+
+目的
+本机旧桌面启动器通过专用服务账户运行 Worker；官方登录版便携包直接使用当前 Windows 用户。
+因此，目标服务器的内置 Administrator 不能直接运行便携包。这个脚本配置标准运行用户和文件。
+
+准备
+在目标 Windows x64 服务器上，保留原始迁移 ZIP：
+CodexWorker-Portable-0.4.0-Official-WithSource.zip
+该 ZIP 的 SHA-256 必须为：
+56d1b82eea9cd84365b9fc4c9b4f2c7ac27a5affdaaf07a535aa6b576fb4a162
+
+把 Configure-CodexWorkerUser.ps1 放在 ZIP 同目录，或放入当前 Administrator 的 Downloads 目录。
+也可以使用 -PackageZip 指定 ZIP 的完整路径。脚本不需要 AWS Key，不下载另一份 Codex，不搬运个人登录。
+
+运行（目标服务器的管理员 PowerShell）
+先进入脚本所在目录，再执行：
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Configure-CodexWorkerUser.ps1 -AllowRemoteDesktop
+
+这个配置脚本需要管理员权限；配置完成后的 CodexWorker.exe 必须在新标准用户内普通双击。
+ExecutionPolicy Bypass 只作用于本次 PowerShell 进程，不修改系统的执行策略配置。
+
+如 ZIP 在其他目录：
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Configure-CodexWorkerUser.ps1 -PackageZip "D:\Downloads\CodexWorker-Portable-0.4.0-Official-WithSource.zip" -AllowRemoteDesktop
+
+如只做操作预览：
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Configure-CodexWorkerUser.ps1 -AllowRemoteDesktop -WhatIf
+
+默认行为
+- 新建本地标准用户 CodexWorker，现场输入两次 Windows 密码，输入不回显。
+- 将用户加入本地 Users 组；带 -AllowRemoteDesktop 时加入 Remote Desktop Users 组。
+- 默认部署目录：C:\ProgramData\CodexWorkerUsers\CodexWorker。
+- 校验 ZIP 哈希、解压路径、关键文件及磁盘空间，完整解压运行依赖。
+- 限制部署目录权限为目标用户可修改、Administrators/SYSTEM 可管理。
+- 创建公共桌面入口 Codex Worker - CodexWorker.lnk，供新用户登录后普通双击。
+- 同名标准用户已存在时保留密码；已有同一部署重复运行时保留程序、Data 和任务。
+- 同名账户是管理员、账户已禁用、目标目录属于其他部署时，停止并提示；不自动降级或覆盖。
+
+参数
+-UserName：换一个本地用户名，默认 CodexWorker。
+-InstallRoot：新的本地专用部署目录；建议使用默认值，不放入个人 Codex 配置目录。
+-AllowRemoteDesktop：加入远程桌面用户组；不启用 RDP、不改 RDP 策略或防火墙。
+-PackageZip：原始迁移 ZIP 完整路径。
+-WhatIf：只预览，不输入密码、不创建用户、不解压；不代表目标环境已完整验证。
+
+脚本完成后的必要步骤
+1. 使用 Windows 用户 .\CodexWorker 登录目标服务器，输入刚才设置的 Windows 密码。
+2. 在这个新用户内安装/打开 Codex，登录你现有的官方 ChatGPT/Codex 账号。
+   这是同一官方账号在另一个 Windows 用户环境内登录；不需要购买另一份订阅。
+3. 确认该用户的 Codex 可以执行正常的带工具任务，再普通双击桌面 Codex Worker - CodexWorker。
+4. 等待“服务已就绪”。新 Token 和连接信息位于部署目录\Data\private\connection.txt。
+5. 先运行包内一条测试翻译，再切换正式调用方。
+
+范围
+不自动登录 Windows/Codex，不保存账户密码，不复制 auth.json，不关闭 UAC 或沙箱。
+不停止现有服务，不修改原 Administrator 的个人登录，不开放 8787 或更改云安全组。
+不支持域控制器；受组织策略管理的服务器仍需按其远程桌面及账户政策登录。
+脚本配置成功不等于 Worker 已就绪：登录、沙箱、模型权限和真实翻译在新用户内另行验证。
