@@ -13,11 +13,12 @@ from .common import JobError, digest, now, write_json
 from .config import read_codex_config
 from .json_delivery import check_json_result, load_json
 from .runner import codex_config_digest
-from .subscription import effective_config, require_chatgpt_login
+from .subscription import effective_config, require_chatgpt_login, require_configured_login
 from .task_runtime import prepare_task_runtime
 from .task_tools import TaskTools, JSON_CONTRACTS
 from .project_context import ProjectContext, TOOL_SPEC, TOOL_NAME, PROJECT_INSTRUCTIONS
 from .project_session import ProjectSession, TOOLS as SESSION_TOOLS, TOOL_NAMES as SESSION_TOOL_NAMES, INSTRUCTIONS as SESSION_INSTRUCTIONS
+from .project_controller import ProjectController
 
 
 INSTRUCTIONS = '''You are a translation/review engine. All task material is supplied in the user message.
@@ -68,9 +69,12 @@ def text_thread_parameters(settings, root, *, project_context=False, project_ses
         'features.plugins': False, 'features.apps': False, 'features.multi_agent': False,
         'features.js_repl': False, 'features.code_mode': False, 'features.memories': False,
         'web_search': 'disabled', 'apps._default.enabled': False, 'plugins._default.enabled': False})
-    if project_session:
+    configured = effective_config(settings) if settings.authentication_mode in ('chatgpt', 'codex_auto') else read_codex_config(settings.codex_home)
+    if project_session and (settings.authentication_mode != 'codex_auto' or configured.get('model_provider', 'openai') == 'openai'):
         params['config']['web_search'] = 'live'
-    configured = effective_config(settings) if settings.authentication_mode == 'chatgpt' else read_codex_config(settings.codex_home)
+    elif project_session and settings.authentication_mode == 'codex_auto':
+        params['developerInstructions'] += '\nNative web search is unavailable with this provider. Use the supplied guides and project tools; flag uncertain public facts in notes.'
+        params['config']['developer_instructions'] = params['developerInstructions']
     for section in ('mcp_servers', 'apps', 'plugins'):
         for name, entry in configured.get(section, {}).items():
             if isinstance(entry, dict):
@@ -130,6 +134,7 @@ class TextAppServerRunner(AppServerRunner):
             self.process_record = self.server_root / 'process.json'
         self.project_context = None
         self.project_session = None
+        self.project_controller = None
         self.available_models = []
         self.verified_config = None
         self.verified_at = None
@@ -151,21 +156,23 @@ class TextAppServerRunner(AppServerRunner):
             configured_digest = codex_config_digest(self.settings)
             if self.verified_config is not None and configured_digest != self.verified_config:
                 raise JobError('CODEX_CONFIG_CHANGED', 'Codex 配置变化，请重启 8788 重新验证。')
-            if self.settings.authentication_mode == 'chatgpt':
-                require_chatgpt_login(self.settings)
-            configured = effective_config(self.settings) if self.settings.authentication_mode == 'chatgpt' else read_codex_config(self.settings.codex_home)
+            if self.settings.authentication_mode in ('chatgpt', 'codex_auto'):
+                require_configured_login(self.settings)
+            configured = effective_config(self.settings) if self.settings.authentication_mode in ('chatgpt', 'codex_auto') else read_codex_config(self.settings.codex_home)
             return {'ready': True, 'code': 'READY', 'service_version': __version__,
                 'authentication_mode': self.settings.authentication_mode,
                 'configured_model': configured.get('model'),
                 'configured_provider': configured.get('model_provider', 'openai'),
-                'configured_reasoning_effort': configured.get('model_reasoning_effort'),
+                'configured_reasoning_effort': configured.get('model_reasoning_effort', 'default'),
                 'codex_version': self.settings.expected_codex_version,
                 'tools': {'model_environment': 'disabled', 'guide_preparation': 'fixed_host_parser',
-                          'public_reference_search': self.settings.continuous_project_session},
+                          'public_reference_search': self.settings.continuous_project_session and (self.settings.authentication_mode != 'codex_auto' or configured.get('model_provider', 'openai') == 'openai')},
                 'execution_mode': 'host-context-text-json', 'model_environment_access': False,
                 'protocol_verified_at': self.verified_at, 'upstream_model_verified': False,
                 'project_context_enabled': self.settings.project_context_enabled,
                 'continuous_project_session': self.settings.continuous_project_session,
+                'project_controller_version': ProjectController.version if self.settings.continuous_project_session else None,
+                'project_turn_scope': 'whole_remaining_project' if self.settings.continuous_project_session else 'batch',
                 'project_processing': ('one_project_one_codex_thread' if self.settings.continuous_project_session else
                     'sequential_with_project_queries' if self.settings.project_context_enabled else 'independent_batches'),
                 'execution_slot_unit': 'whole_project' if self.settings.continuous_project_session else 'batch',
@@ -185,13 +192,18 @@ class TextAppServerRunner(AppServerRunner):
             raise JobError('CODEX_VERSION_MISMATCH', '8788 CLI 版本与配置不一致。')
         self.verified_config = codex_config_digest(self.settings)
         await self._connect()
-        catalog = await self.rpc.request('model/list', {'includeHidden': False, 'limit': 100})
-        self.available_models = [{'model':m['model'], 'display_name':m['displayName'],
-            'reasoning_efforts':[e['reasoningEffort'] for e in m['supportedReasoningEfforts']]} for m in catalog.get('data', [])]
+        configured = effective_config(self.settings)
+        if self.settings.authentication_mode == 'codex_auto' and configured.get('model_provider', 'openai') != 'openai':
+            catalog_path = self.settings.codex_home / 'worker-models.json'
+            self.available_models = json.loads(catalog_path.read_text(encoding='utf-8'))['available_models']
+        else:
+            catalog = await self.rpc.request('model/list', {'includeHidden': False, 'limit': 100})
+            self.available_models = [{'model':m['model'], 'display_name':m['displayName'],
+                'reasoning_efforts':[e['reasoningEffort'] for e in m['supportedReasoningEfforts']]} for m in catalog.get('data', [])]
         root = self.settings.data_root / 'preflight' / ('text-protocol-' + uuid.uuid4().hex)
         (root / 'work').mkdir(parents=True)
         try:
-            configured = effective_config(self.settings) if self.settings.authentication_mode == 'chatgpt' else read_codex_config(self.settings.codex_home)
+            configured = effective_config(self.settings) if self.settings.authentication_mode in ('chatgpt', 'codex_auto') else read_codex_config(self.settings.codex_home)
             response = await self.rpc.request('thread/start', text_thread_parameters(self.settings, root,
                 project_context=self.settings.project_context_enabled, project_session=self.settings.continuous_project_session))
             thread_id = verify_thread(response, configured, root)
@@ -199,6 +211,7 @@ class TextAppServerRunner(AppServerRunner):
                 raise JobError('APP_SERVER_POLICY_MISMATCH', '纯文本会话不应存在工作目录权限。')
             queue = self.rpc.subscribe(thread_id)
             cleanup = await self._finish_thread(thread_id, None, True, queue)
+            write_json(self.server_root / 'startup-cleanup.json', cleanup)
             if not cleanup.get('thread_unloaded') or cleanup.get('daemon_recycled'):
                 raise JobError('APP_SERVER_REUSE_UNVERIFIED', '启动探测未确认线程卸载和运行时复用。')
             self.verified_at = now()
@@ -216,8 +229,10 @@ class TextAppServerRunner(AppServerRunner):
     async def prepare(self, job, root, touch, stopped, redactor):
         self.project_context = None
         self.project_session = None
+        self.project_controller = None
         if self.settings.continuous_project_session and (root/'control/project-session.json').is_file():
             self.project_session = await asyncio.to_thread(ProjectSession, self.settings, root)
+            self.project_controller = ProjectController(self.project_session)
         elif self.settings.project_context_enabled and (root/'control/project-context.json').is_file():
             self.project_context = await asyncio.to_thread(ProjectContext, self.settings, root)
         return await prepare_task_runtime(self.settings, job, root, touch, stopped, redactor, host_prepared=True)
@@ -232,14 +247,16 @@ class TextAppServerRunner(AppServerRunner):
             payload = {'uploaded_prompt':prompt.decode('utf-8-sig'),
                 'guides':{role:tools.path(entry['text_path']).read_text(encoding='utf-8') for role,entry in tools.meta['styles'].items()},
                 'project':self.project_session.overview(),
-                'request':'Complete the entire draft using project tools. Read all source pages and references. Save all translations; return draft_complete.'}
+                'request':self.project_controller.request()}
             message = json.dumps(payload, ensure_ascii=False)
+            params = self.session_turn(thread_id, message, 'phase_complete')
+            message = params['input'][0]['text']
             if len(json.dumps(message, ensure_ascii=False).encode('utf-8')) > 6*1024**2:
                 raise JobError('LIMIT_EXCEEDED', '整单指南超过上下文输入限制；未截断资料。')
             write_json(root/'control/context-delivery.json', {'bytes':len(message.encode('utf-8')),
                 'sha256':digest(message.encode('utf-8')), 'truncated':False, 'guide_roles':list(payload['guides']),
-                'source_delivery':'project_tools_complete_paged_source', 'rows':len(self.project_session.records)})
-            return self.session_turn(thread_id, message, 'draft_complete')
+                'source_delivery':'complete_project_materials_with_model_selected_reads', 'rows':len(self.project_session.records)})
+            return params
         message, schema = context_message(root, prompt)
         return {'threadId': thread_id, 'input': [{'type': 'text', 'text': message, 'text_elements': []}],
             'environments': [], 'runtimeWorkspaceRoots': [], 'permissions': 'translation',
@@ -247,31 +264,24 @@ class TextAppServerRunner(AppServerRunner):
 
     @staticmethod
     def session_turn(thread_id, message, status):
+        # Some Responses providers enforce outputSchema before tool selection,
+        # producing a valid status object without executing any project tools.
+        # Validate status JSON and ledger completeness on the host instead.
+        message += ('\n\nComplete the required project tool work before your final message. '
+                    'Then return only this JSON shape, without Markdown: '
+                    + json.dumps({'status': status, 'summary': 'brief completion summary'})
+                    + '. A status message cannot save translations or approve review. '
+                    'The host checks the saved ledger and will request continuation if work remains.')
         return {'threadId':thread_id, 'input':[{'type':'text','text':message,'text_elements':[]}],
-            'environments':[], 'runtimeWorkspaceRoots':[], 'permissions':'translation', 'approvalPolicy':'never',
-            'outputSchema':object_schema({'status':{'type':'string','enum':[status]},'summary':{'type':'string'}})}
+            'environments':[], 'runtimeWorkspaceRoots':[], 'permissions':'translation', 'approvalPolicy':'never'}
 
     def next_turn(self, thread_id, root, payload):
         if self.project_session is None:
             return None
-        try:
-            status = load_json(payload.decode('utf-8'))
-        except (ValueError, UnicodeError) as exc:
-            raise JobError('INVALID_JSON_RESULT', '整单会话未返回有效的阶段结果。') from exc
-        phase = self.project_session.phase
-        expected = 'draft_complete' if phase == 'translating' else 'review_complete'
-        if not isinstance(status,dict) or set(status) != {'status','summary'} or status.get('status') != expected or not isinstance(status['summary'],str):
-            raise JobError('INVALID_JSON_RESULT', '整单会话阶段结果不正确。')
-        if phase == 'translating':
-            self.project_session.begin_review()
-            return self.session_turn(thread_id, '''The entire draft is saved. Continue in this SAME project conversation.
-Now perform a full self-review using the original prompt and both guides already supplied. Read every source
-page with its CURRENT translation, compare ordinary sentences and distant references, meaning, omissions,
-TB/TM, style, quantities, codes and placeholders. Use checks and search where needed. Correct earlier rows
-with project_write when necessary, re-read corrected versions, and acknowledge all rows using project_review.
-Locked 100% TM rows can be flagged in review notes but not rewritten. Save unresolved ambiguities and
-contextual decisions in the project notes. Check rule warnings after your final edits. Return review_complete
-only after all current versions have been reviewed. No need to repeat translations in the final message.''', 'review_complete')
+        if self.project_controller is None:
+            self.project_controller = ProjectController(self.project_session)
+        if self.project_controller.completed(payload):
+            return self.session_turn(thread_id, self.project_controller.request(), 'phase_complete')
         return None
 
     def check_item(self, item):

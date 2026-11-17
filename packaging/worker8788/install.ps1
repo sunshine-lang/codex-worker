@@ -5,7 +5,8 @@ New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item -LiteralPath "$workspace\build\app-server-8788\Worker8788.exe" -Destination "$dest\Worker8788.exe"
 Copy-Item -LiteralPath "$PSScriptRoot\watchdog.ps1" -Destination "$dest\watchdog.ps1"
 Copy-Item -LiteralPath "$PSScriptRoot\settings8788.py" -Destination "$dest\settings8788.py"
-Copy-Item -LiteralPath "$workspace\build\app-server-8788\start-reuse-subscription.ps1" -Destination "$dest\start-worker.ps1"
+Copy-Item -LiteralPath "$PSScriptRoot\codex_provider.py" -Destination "$dest\codex_provider.py"
+Copy-Item -LiteralPath "$workspace\deployments\worker8788\runtime\start-worker.ps1" -Destination "$dest\start-worker.ps1"
 $pwsh=(Get-Command pwsh.exe).Source
 @{pwsh=$pwsh} | ConvertTo-Json | Set-Content -LiteralPath "$dest\runtime.json" -Encoding utf8
 $action=New-ScheduledTaskAction -Execute $pwsh -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$dest+'\watchdog.ps1"') -WorkingDirectory $dest

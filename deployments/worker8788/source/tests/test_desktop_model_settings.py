@@ -16,11 +16,18 @@ def controller(tmp_path,monkeypatch):
     module.DATA=tmp_path
     module.CONFIG=tmp_path/'config.toml'
     module.TRIAL=tmp_path/'config.trial.json'
-    module.CONFIG.write_text('model="before"\nmodel_reasoning_effort="high"\nmodel_provider="openai"\n[windows]\nsandbox="elevated"\n')
+    selected={'model_provider':'openai','model':'before','model_reasoning_effort':'high',
+              'cli_auth_credentials_store':'file','thread_unload_delay_secs':0}
+    source={'config':selected,'auth':{},'env':{},'public':{'configured_provider':'openai','source_signature':'fixture',
+        'available_models':[{'model':m,'reasoning_efforts':['medium','high']} for m in ('before','after')]}}
+    module.current_source=lambda:source
+    module.CONFIG.write_text(module.replace_config(module.to_toml(selected),'before','high')+'\n[windows]\nsandbox="elevated"\n')
+    for name,value in [('auth.json',{}),('provider-env.json',{}),('worker-models.json',source['public'])]:
+        (tmp_path/name).write_text(json.dumps(value,ensure_ascii=False),encoding='utf-8')
     module.TRIAL.write_text(json.dumps({'max_concurrent_jobs':8,'task_batch_concurrency':1,
-        'project_context_enabled':True,'port':8788,'codex_home':'unchanged-home'}))
+        'project_context_enabled':True,'port':8788,'codex_home':'unchanged-home','authentication_mode':'codex_auto'}))
     module.ready=lambda:{'available_models':[{'model':m,'reasoning_efforts':['medium','high']} for m in ('before','after')],
-        'ready':True,'configured_model':'before','configured_reasoning_effort':'high','max_concurrent_jobs':8,
+        'ready':True,'configured_provider':'openai','configured_model':'before','configured_reasoning_effort':'high','max_concurrent_jobs':8,
         'task_batch_concurrency':1,'project_context_enabled':True,'independent_app_server_processes':8,
         'app_server_generations':{str(i):1 for i in range(8)}}
     module.assert_idle=lambda:None
@@ -60,7 +67,7 @@ def test_failed_restart_rolls_back_original(controller):
 
 
 def test_successful_model_update(controller):
-    controller.start_and_wait=lambda expected:{'ready':True}
+    controller.start_and_wait=lambda expected:{'ready':True,'configured_provider':'openai'}
     result=controller.apply('after','medium')
     assert result['changed'] and tomllib.loads(controller.CONFIG.read_text())['model']=='after'
 
@@ -74,7 +81,7 @@ def test_unavailable_effort_rejected_before_restart(controller):
 @pytest.mark.parametrize('count',[1,4,8])
 def test_channels_preserve_sequential_project_and_model(controller,count):
     model_before=controller.CONFIG.read_bytes()
-    controller.start_and_wait=lambda expected:{'ready':True}
+    controller.start_and_wait=lambda expected:{'ready':True,'configured_provider':'openai'}
     controller.apply('before','high',count)
     config=json.loads(controller.TRIAL.read_text())
     assert config['max_concurrent_jobs']==count and config['task_batch_concurrency']==1

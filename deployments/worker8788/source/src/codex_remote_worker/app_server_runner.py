@@ -8,10 +8,10 @@ import time
 import tomllib
 
 from .app_server_rpc import AppServerRpc, AppServerRpcError
-from .common import JobError, Redactor, atomic_write, digest, now, write_json
+from .common import JobError, Redactor, atomic_write, digest, file_digest, now, write_json
 from .config import read_codex_config
 from .runner import CodexRunner, config_arguments, codex_config_digest
-from .subscription import effective_config, require_chatgpt_login
+from .subscription import effective_config, require_chatgpt_login, require_configured_login
 from .task_runtime import prepare_task_runtime
 
 
@@ -132,6 +132,22 @@ class AppServerRunner(CodexRunner):
                     return True
         except (JobError, TimeoutError):
             pass
+        if not rpc.connected:
+            return False
+        try:
+            cursor = None
+            for _ in range(100):
+                page = await rpc.request('thread/loaded/list', {'limit': 100, 'cursor': cursor}, timeout=timeout)
+                ids = page.get('data')
+                if not isinstance(ids, list) or any(not isinstance(x, str) for x in ids):
+                    return False
+                if thread_id in ids:
+                    return False
+                cursor = page.get('nextCursor')
+                if not cursor:
+                    return True
+        except (JobError, TimeoutError):
+            pass
         return False
 
     async def _finish_thread(self, thread_id, turn_id, terminal, queue):
@@ -187,7 +203,7 @@ class AppServerRunner(CodexRunner):
             config_sha = codex_config_digest(self.settings)
             if 'codex_config_sha256' in job and job['codex_config_sha256'] != config_sha:
                 raise JobError('CODEX_CONFIG_CHANGED', '任务提交后 Codex 配置变化，未调用模型。')
-            configured = (effective_config(self.settings) if self.settings.authentication_mode == 'chatgpt'
+            configured = (effective_config(self.settings) if self.settings.authentication_mode in ('chatgpt', 'codex_auto')
                           else read_codex_config(self.settings.codex_home))
             prompt = (root / 'input' / job['inputs']['prompt_file']['filename']).read_bytes()
             if digest(prompt) != job['prompt_sha256']:
@@ -195,8 +211,8 @@ class AppServerRunner(CodexRunner):
             preparation = await self.prepare(job, root, touch, stopped, redactor)
             if codex_config_digest(self.settings) != config_sha:
                 raise JobError('CODEX_CONFIG_CHANGED', '文件准备期间 Codex 配置变化，未调用模型。')
-            if self.settings.authentication_mode == 'chatgpt':
-                await asyncio.to_thread(require_chatgpt_login, self.settings, refresh=True)
+            if self.settings.authentication_mode in ('chatgpt', 'codex_auto'):
+                await asyncio.to_thread(require_configured_login, self.settings, refresh=True)
             reused = not self.restart_pending
             if self.restart_pending:
                 await self._connect()  # A new daemon, never a replay of an earlier model turn.
@@ -214,6 +230,9 @@ class AppServerRunner(CodexRunner):
                 'turn_completed': False, 'turn_failed': False, 'runtime_preparation': preparation,
                 'app_server_generation': self.generation, 'daemon_reused': reused,
                 'model_output_schema_requested': False, 'exit_code_semantics': 'turn_status_not_daemon_exit'}
+            session = getattr(self, 'project_session', None)
+            if session is not None:
+                execution.update(project_session=session.progress(), conversation_mode='one_project_one_thread')
             touch(execution=execution)
             thread_id = turn_id = None
             terminal = False
@@ -226,8 +245,54 @@ class AppServerRunner(CodexRunner):
             trace_path = root / 'logs/trace.jsonl'
             error_path = root / 'logs/stderr.log'
             try:
-                response = await rpc.request('thread/start', self.thread_parameters(root))
+                resume = job.get('project_resume')
+                if resume:
+                    session = getattr(self, 'project_session', None)
+                    if (session is None or not session.restored or resume.get('job_id') != job['job_id']
+                            or resume.get('task_id') != session.task['task_id'] or not resume.get('thread_id')
+                            or file_digest(root/'control/project-session-state.json') != resume.get('checkpoint_sha256')):
+                        raise JobError('INVALID_PROJECT_CHECKPOINT', '续翻会话与已保存检查点不匹配。')
+                    start_parameters = self.thread_parameters(root)
+                    parameters = {k:v for k,v in start_parameters.items() if k in {
+                        'approvalPolicy','permissions','config','cwd','developerInstructions','runtimeWorkspaceRoots',
+                        'environments','selectedCapabilityRoots'}}
+                    parameters.update(threadId=resume['thread_id'], excludeTurns=True)
+                    execution['restored_project_session'] = session.progress()
+                    try:
+                        response = await rpc.request('thread/resume', parameters)
+                        execution['resumed_from_thread_id'] = resume['thread_id']
+                    except AppServerRpcError as exc:
+                        # This Codex build accepts environments=[] on thread/start,
+                        # but not thread/resume. A resume can fail while preparing
+                        # its default local environment, BEFORE any model turn.
+                        # Rehydrate the verified ledger in a new environmentless
+                        # thread; never weaken permissions or retry a model turn.
+                        if not (start_parameters.get('environments') == []
+                                and start_parameters.get('runtimeWorkspaceRoots') == []
+                                and exc.detail.startswith('error resuming thread:')
+                                and 'failed to prepare Windows sandbox:' in exc.detail
+                                and 'app runtime provisioning service is unavailable; refusing helper fallback' in exc.detail):
+                            raise
+                        execution.update(checkpoint_source_thread_id=resume['thread_id'],
+                            thread_recovery_mode='checkpoint_rehydrate',
+                            conversation_mode='one_project_one_thread_per_recovery',
+                            thread_history_restored=False,
+                            thread_resume_error=redactor.text(exc.detail))
+                        response = await rpc.request('thread/start', start_parameters)
+                else:
+                    response = await rpc.request('thread/start', self.thread_parameters(root))
                 thread_id = verify_thread(response, configured, root)
+                rebuilt = execution.get('thread_recovery_mode') == 'checkpoint_rehydrate'
+                if resume and not rebuilt and thread_id != resume['thread_id']:
+                    raise JobError('INVALID_PROJECT_CHECKPOINT', 'App Server 未恢复指定原会话。')
+                if rebuilt:
+                    if response.get('runtimeWorkspaceRoots') or thread_id == resume['thread_id']:
+                        raise JobError('APP_SERVER_POLICY_MISMATCH', '检查点恢复未创建独立的无环境会话。')
+                    write_json(root/'control/project-thread-recovery.json', {
+                        'mode':'checkpoint_rehydrate', 'source_thread_id':resume['thread_id'],
+                        'thread_id':thread_id, 'checkpoint_sha256':resume['checkpoint_sha256'],
+                        'restored_project_session':session.progress(), 'history_restored':False,
+                        'reason':execution['thread_resume_error'], 'created_at':now()})
                 queue = rpc.subscribe(thread_id)
                 if getattr(self, 'project_context', None) is not None or getattr(self, 'project_session', None) is not None:
                     rpc.tool_threads.add(thread_id)
@@ -289,7 +354,7 @@ class AppServerRunner(CodexRunner):
                             session = getattr(self, 'project_session', None)
                             if session is not None:
                                 execution['project_session'] = session.progress()
-                                execution['conversation_mode'] = 'one_project_one_thread'
+                                execution.setdefault('conversation_mode', 'one_project_one_thread')
                             else:
                                 execution['project_context_queries'] = len(self.project_context.calls)
                             touch(execution=execution)
@@ -341,14 +406,20 @@ class AppServerRunner(CodexRunner):
                             choices = [text for phase, text in final_messages.values() if phase == 'final_answer']
                             if not choices:
                                 choices = [text for phase, text in final_messages.values() if phase is None]
-                            if not choices:
+                            if not choices and getattr(self, 'project_session', None) is None:
                                 raise JobError('INCOMPLETE_TURN', '未收到最终回答，不能仅凭完成事件交付。')
-                            payload = choices[-1].encode('utf-8')
+                            payload = choices[-1].encode('utf-8') if choices else b''
                             if len(payload) > self.settings.max_output_bytes:
                                 raise JobError('LIMIT_EXCEEDED', '最终回答超过大小限制。')
                             continuation = self.next_turn(thread_id, root, payload)
+                            controller = getattr(self, 'project_controller', None)
+                            if controller is not None:
+                                execution.update(project_controller_version=controller.version,
+                                    project_turns=controller.history, project_session=self.project_session.progress())
+                                atomic_write(root/'control/turn-responses'/f'{len(execution["turn_ids"]):04d}.txt', payload)
                             if continuation is not None:
-                                atomic_write(root / 'control/draft_response.raw.json', payload)
+                                if self.project_session.phase == 'reviewing' and not (root/'control/draft_response.raw.json').exists():
+                                    atomic_write(root / 'control/draft_response.raw.json', payload)
                                 if stopped():
                                     raise JobError('CANCEL_REQUESTED', '整单在最终检查前已请求停止。')
                                 if codex_config_digest(self.settings) != config_sha:
@@ -361,7 +432,8 @@ class AppServerRunner(CodexRunner):
                                 execution['turn_ids'].append(turn_id)
                                 execution.update(turn_id=turn_id, project_session=self.project_session.progress())
                                 final_messages.clear()
-                                touch(execution=execution, stage='project_self_review')
+                                touch(execution=execution, stage='project_self_review'
+                                      if self.project_session.phase=='reviewing' else 'translating')
                                 continue
                             atomic_write(root / 'control/final_response.raw.md', payload)
                             self.delivered(root, payload)

@@ -48,19 +48,27 @@ def trial_settings(path):
     if executable.suffix.lower() != '.exe':
         raise ValueError('Native Codex executable required')
     authentication = overrides.get('authentication_mode', settings.authentication_mode)
-    if authentication not in ('server_codex', 'chatgpt'):
+    if authentication not in ('server_codex', 'chatgpt', 'codex_auto'):
         raise ValueError('Unknown authentication mode')
     home = settings.codex_home
-    if authentication == 'chatgpt':
+    if authentication in ('chatgpt', 'codex_auto'):
         home = Path(overrides.get('codex_home', ''))
         if not home.is_absolute() or home.resolve() != (data.resolve() / 'private/codex-home').resolve():
             raise ValueError('8788 subscription requires its own private Codex home')
         home = home.resolve(strict=True)
     elif 'codex_home' in overrides:
         raise ValueError('Codex home override requires subscription mode')
+    provider_env = {}
+    if authentication == 'codex_auto':
+        env_path = home / 'provider-env.json'
+        if env_path.is_file():
+            from pydantic import SecretStr
+            from .config import provider_env_names
+            allowed = provider_env_names(read_codex_config(home))
+            provider_env = {k: SecretStr(v) for k,v in json.loads(env_path.read_text()).items() if k in allowed}
     settings = settings.model_copy(update={'data_root': data.resolve(), 'port': 8788,
         'authentication_mode': authentication, 'codex_home': home,
-        'provider_env': {} if authentication == 'chatgpt' else settings.provider_env,
+        'provider_env': provider_env if authentication in ('chatgpt', 'codex_auto') else settings.provider_env,
         'codex_executable': executable, 'expected_codex_version': overrides['expected_codex_version'],
         'tool_read_roots': list(dict.fromkeys([*settings.tool_read_roots, executable.parent])),
         'bind_host': overrides['bind_host'],

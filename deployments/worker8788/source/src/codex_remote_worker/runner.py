@@ -15,7 +15,7 @@ from .windows import WindowsProcess, reconcile_process
 from .sandbox_state import capture_sandbox_state, same_sandbox_state
 from .task_runtime import prepare_task_runtime, runtime_instructions
 from . import task_tools
-from .subscription import require_chatgpt_login, effective_config, selected_profile_path
+from .subscription import require_chatgpt_login, require_configured_login, effective_config, selected_profile_path
 
 
 POLICY_VERSION = 'workspace-only-server-codex-v3-runtime-tools'
@@ -93,10 +93,10 @@ def config_arguments(settings, root):
             read_codex_config(settings.codex_home).get('developer_instructions', ''),
             runtime_instructions(settings, root)])),
     }
-    if settings.authentication_mode == 'chatgpt':
+    if settings.authentication_mode in ('chatgpt', 'codex_auto'):
         personal = effective_config(settings)
         # A translation worker must not inherit the user's personal connected tools.
-        overrides.update({'model_provider': 'openai', 'features.apps': False, 'apps._default.enabled': False,
+        overrides.update({'model_provider': personal.get('model_provider', 'openai') if settings.authentication_mode == 'codex_auto' else 'openai', 'features.apps': False, 'apps._default.enabled': False,
                           'plugins._default.enabled': False})
         for section in ('mcp_servers', 'apps', 'plugins'):
             entries = personal.get(section, {})
@@ -127,7 +127,7 @@ def build_command(settings, job, root):
 def codex_config_digest(settings):
     path = settings.codex_home / 'config.toml'
     root_digest = file_digest(path) if path.exists() else None
-    if settings.authentication_mode == 'chatgpt':
+    if settings.authentication_mode in ('chatgpt', 'codex_auto'):
         profile = selected_profile_path(settings)
         if profile is not None:
             return digest(canonical({'config': root_digest, 'profile': file_digest(profile)}))
@@ -202,8 +202,8 @@ class CodexRunner:
                 if not same_sandbox_state(receipt.get('sandbox_state'), current):
                     return {'ready': False, 'code': 'SANDBOX_STATE_CHANGED',
                             'message': 'Windows 沙箱账户已被其他 Codex 实例重置；请在服务启动器中点击“修复沙箱”。'}
-            if self.settings.authentication_mode == 'chatgpt':
-                require_chatgpt_login(self.settings)
+            if self.settings.authentication_mode in ('chatgpt', 'codex_auto'):
+                require_configured_login(self.settings)
             return {'ready': True, 'code': 'READY', 'codex_version': receipt['codex_version'],
                     'tools': receipt['tools'], 'sandbox_verified_at': receipt['verified_at'],
                     'upstream_model_verified': False, 'configuration_source': 'server_codex', 'service_version': __version__}
@@ -225,7 +225,7 @@ class CodexRunner:
         config_sha = codex_config_digest(self.settings)
         if 'codex_config_sha256' in job and job['codex_config_sha256'] != config_sha:
             raise JobError('CODEX_CONFIG_CHANGED', '任务提交后 Codex 配置已变化，请确认配置后重新提交。')
-        configured = (effective_config(self.settings) if self.settings.authentication_mode == 'chatgpt'
+        configured = (effective_config(self.settings) if self.settings.authentication_mode in ('chatgpt', 'codex_auto')
                       else read_codex_config(self.settings.codex_home))
         prompt = (root / 'input' / job['inputs']['prompt_file']['filename']).read_bytes()
         if digest(prompt) != job['prompt_sha256']:
@@ -233,8 +233,8 @@ class CodexRunner:
         preparation = await prepare_task_runtime(self.settings, job, root, touch, stopped, redactor)
         if codex_config_digest(self.settings) != config_sha:
             raise JobError('CODEX_CONFIG_CHANGED', '文件准备期间 Codex 配置发生变化，未启动模型。')
-        if self.settings.authentication_mode == 'chatgpt':
-            await asyncio.to_thread(require_chatgpt_login, self.settings, refresh=True)
+        if self.settings.authentication_mode in ('chatgpt', 'codex_auto'):
+            await asyncio.to_thread(require_configured_login, self.settings, refresh=True)
             if codex_config_digest(self.settings) != config_sha:
                 raise JobError('CODEX_CONFIG_CHANGED', '账号验证期间 Codex 配置变化，未调用模型。')
         # The first model request must know the completed context-page count.

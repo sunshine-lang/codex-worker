@@ -7,7 +7,7 @@ import pytest
 
 from codex_remote_worker.app import create_app
 from codex_remote_worker.app_server_text import TextAppServerRunner, text_thread_parameters
-from codex_remote_worker.common import JobError, file_digest, write_json
+from codex_remote_worker.common import JobError, digest, file_digest, write_json
 from codex_remote_worker.project_session import ProjectSession, TOOL_NAMES
 from codex_remote_worker.translation_tasks import plan_request, BatchPolicy
 from test_app_server_adapter import Rpc
@@ -15,7 +15,7 @@ from test_translation_tasks import row, uploads, headers, wait_for_task
 
 
 def read_args(operation='source', **kw):
-    return {'operation':operation,'start':0,'count':32,'query':'','char_offset':0,**kw}
+    return {'operation':operation,'start':0,'count':32,'query':'','char_offset':0,'char_limit':16000,**kw}
 
 
 def translated(key, text='保持柜门打开。'):
@@ -65,8 +65,7 @@ def test_full_project_read_past_translation_revisions_and_review_versions(settin
     with pytest.raises(ValueError,match='Read'):
         session.call('project_write',{'rows':[translated(0)],'notes':''})
     read_all(session)
-    with pytest.raises(ValueError,match='order'):
-        session.call('project_write',{'rows':[translated(2)],'notes':''})
+    session.call('project_write',{'rows':[translated(2)],'notes':''})
     session.call('project_write',{'rows':[translated(0),translated(2)],'notes':'Earlier context: cabinet door.'})
     value=json.loads(session.call('project_read',read_args('search',query='保持柜门打开'))['content'])
     assert len(value['rows'])==2
@@ -115,6 +114,28 @@ def test_partial_source_page_cannot_be_treated_as_read(settings):
     session.call('project_write',{'rows':[translated(0)],'notes':''})
 
 
+def test_model_selects_full_material_and_unbounded_save_review_groups(settings):
+    session=fixture_session(settings,131)
+    session.records[0]['context']='long source context '*5000
+    read=session.call('project_read',read_args(count=0,char_limit=0))
+    assert not read['has_more'] and read['next_read'] is None
+    assert len(read['content'])>65536 and len(json.loads(read['content'])['rows'])==131
+    # The model can choose any order; an incomplete checkpoint restores without filling gaps.
+    session.call('project_write',{'rows':[translated(130)],'notes':'last row first'})
+    restored=ProjectSession(settings,session.root)
+    assert set(restored.values)=={'130'}
+    assert restored.overview()['first_untranslated_row_id']=='0'
+    session.call('project_write',{'rows':[translated(k) for k in reversed(session.pending)],'notes':'all rows'})
+    assert session.phase=='reviewing'
+    with pytest.raises(ValueError,match='CURRENT'):
+        session.call('project_review',{'row_ids':[str(i) for i in range(131)],'note':''})
+    session.call('project_read',read_args(count=0,char_limit=0))
+    session.call('project_review',{'row_ids':[str(i) for i in range(131)],'note':'current versions'})
+    session.call('project_read',read_args('checks',count=0,char_limit=0))
+    result=session.finish()
+    assert [r['row_id'] for r in result['rows']]==session.pending
+
+
 class ProjectRpc(Rpc):
     def __init__(self,runner,mode='success'):
         super().__init__(mode)
@@ -127,20 +148,21 @@ class ProjectRpc(Rpc):
         self.calls.append((method,params))
         self.turns+=1;self.turn_id='turn-'+str(self.turns)
         session=self.runner.project_session
-        session.page_chars=100000  # Pagination itself is covered by the long-source test.
         # Simulate model tool requests through the real runner transport dispatch.
         self.actions=[]
         for query in ('prompt','project_style','general_style'):
             self.actions.append(('project_read',read_args('guides',query=query)))
         for start in range(0,len(session.records),32):
-            self.actions.append(('project_read',read_args(start=start)))
+            self.actions.append(('project_read',read_args(start=start,char_limit=0)))
         if session.phase=='translating':
             self.actions.append(('project_write',{'rows':[translated(k,'模型译文 '+k) for k in session.pending],'notes':'One project.'}))
-        elif self.mode=='bad_review':
+        if self.mode=='same_turn':
+            self.actions.append(('project_read',read_args(count=0,char_limit=0)))
+        if self.mode=='bad_review' and session.phase=='reviewing':
             self.actions=[]
-        else:
+        elif session.phase=='reviewing' or self.mode=='same_turn':
             self.actions.append(('project_write',{'rows':[translated(session.pending[0],'回改后的译文')],'notes':'Corrected earlier text.'}))
-            self.actions.append(('project_read',read_args()))
+            self.actions.append(('project_read',read_args(char_limit=0)))
             for start in range(0,len(session.records),128):
                 self.actions.append(('project_review',{'row_ids':[str(i) for i in range(start,min(start+128,len(session.records)))],'note':'reviewed'}))
             self.actions.append(('project_read',read_args('checks')))
@@ -155,7 +177,7 @@ class ProjectRpc(Rpc):
             queue.put_nowait({'id':str(len(self.actions)), 'method':'item/tool/call','params':{**base,'tool':tool,'arguments':args}})
         else:
             status='draft_complete' if self.runner.project_session.phase=='translating' else 'review_complete'
-            if status=='draft_complete':
+            if self.turns==1:
                 queue.put_nowait({'method':'item/completed','params':{**base,'item':{'id':'compact','type':'contextCompaction'}}})
             queue.put_nowait({'method':'item/completed','params':{**base,'item':{'id':self.turn_id,'type':'agentMessage',
                 'phase':'final_answer','text':json.dumps({'status':status,'summary':'done'})}}})
@@ -171,8 +193,8 @@ class ProjectRpc(Rpc):
         self._emit()
 
 
-@pytest.mark.parametrize('mode',['success','bad_review'])
-def test_one_job_one_thread_two_turns_and_no_unreviewed_result(settings,monkeypatch,mode):
+@pytest.mark.parametrize('mode',['success','bad_review','same_turn'])
+def test_one_job_one_thread_model_selects_turns_and_no_unreviewed_result(settings,monkeypatch,mode):
     settings=settings.model_copy(update={'project_context_enabled':True,'continuous_project_session':True})
     settings.doc_converter.write_bytes(b'fixture converter (not called for Markdown)')
     monkeypatch.setattr(TextAppServerRunner,'baseline_ready',lambda _: {'ready':True,'service_version':'fixture','codex_version':'fixture','tools':{}})
@@ -190,18 +212,30 @@ def test_one_job_one_thread_two_turns_and_no_unreviewed_result(settings,monkeypa
                 manifest=(await c.get('/v1/tasks/'+task_id+'/batches')).json()
                 assert len(manifest['batches'])==2
                 assert len({b['job_id'] for b in manifest['batches']})==1
-                assert runner.rpc.threads==1 and runner.rpc.turns==2 and runner.rpc.unloaded==1
+                expected_turns=4 if mode=='bad_review' else 1 if mode=='same_turn' else 2
+                assert runner.rpc.threads==1 and runner.rpc.turns==expected_turns and runner.rpc.unloaded==1
                 starts=[p for m,p in runner.rpc.calls if m=='turn/start']
-                assert starts[0]['threadId']==starts[1]['threadId']
+                assert len({p['threadId'] for p in starts})==1
+                assert all('outputSchema' not in p for p in starts)
+                assert '"status": "phase_complete"' in starts[0]['input'][0]['text']
                 assert 'uploaded_prompt' in starts[0]['input'][0]['text']
-                assert 'uploaded_prompt' not in starts[1]['input'][0]['text']
-                if mode=='success':
+                assert all('uploaded_prompt' not in p['input'][0]['text'] for p in starts[1:])
+                if mode!='bad_review':
                     assert final['status']=='completed',final
                     assert final['self_review_status']=='completed'
                     job=app.state.store.get(manifest['batches'][0]['job_id'])
+                    delivery=json.loads((runner.project_session.root/'control/context-delivery.json').read_text(encoding='utf-8'))
+                    submitted=starts[0]['input'][0]['text'].encode('utf-8')
+                    assert delivery['bytes']==len(submitted)
+                    assert delivery['sha256']==digest(submitted)
                     assert job['execution']['context_compactions']==1
+                    assert job['execution']['project_controller_version']=='ledger/2'
+                    assert all(t['work_scope']=='whole_remaining_project' for t in job['execution']['project_turns'])
+                    # The host accepts a complete draft AND self-review in a single model turn.
+                    assert job['execution']['project_turns'][0]['after']['draft']==64
+                    assert job['execution']['project_turns'][-1]['after']['reviewed']==65
                     guide_reads=[x for x in runner.project_session.calls if x.get('operation')=='guides']
-                    assert len(guide_reads)==6 and guide_reads[-1]['phase']=='reviewing'
+                    assert len(guide_reads)==3*expected_turns
                     result=(await c.get(final['result_path'])).json()
                     assert result['segments'][0]['target_text']=='回改后的译文'
                     assert result['segments'][1]['target_text']=='TM 原样译文'
@@ -214,6 +248,31 @@ def test_one_job_one_thread_two_turns_and_no_unreviewed_result(settings,monkeypa
                     assert not any(b['available'] for b in manifest['batches'])
                     assert (await c.get('/v1/tasks/'+task_id+'/result')).status_code==409
     asyncio.run(exercise())
+
+
+def test_status_json_without_tool_writes_cannot_complete_draft(settings):
+    runner = TextAppServerRunner(settings)
+    runner.project_session = fixture_session(settings)
+    for _ in range(2):
+        assert runner.next_turn('thread', runner.project_session.root,
+            b'{"status":"draft_complete","summary":"done"}') is not None
+    with pytest.raises(JobError) as error:
+        runner.next_turn('thread', runner.project_session.root,
+            b'{"status":"draft_complete","summary":"done"}')
+    assert error.value.code == 'PROJECT_NO_PROGRESS'
+    assert runner.project_session.phase == 'translating'
+    assert not runner.project_session.values
+
+
+@pytest.mark.parametrize('payload', [b'not JSON', b'{"status":"draft_complete"}',
+    b'{"status":"review_complete","summary":"done"}',
+    b'{"status":"draft_complete","summary":1}'])
+def test_invalid_status_is_only_a_hint_and_cannot_publish_an_incomplete_ledger(settings, payload):
+    runner = TextAppServerRunner(settings)
+    runner.project_session = fixture_session(settings)
+    assert runner.next_turn('thread', runner.project_session.root, payload) is not None
+    assert runner.project_session.phase == 'translating'
+    assert not runner.project_session.values
 
 
 def test_session_tool_policy_has_no_filesystem_or_external_app_access(settings,tmp_path):

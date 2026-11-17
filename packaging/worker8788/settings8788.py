@@ -9,21 +9,29 @@ import subprocess
 import time
 import tomllib
 import uuid
+import os
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from codex_provider import snapshot, to_toml
 
 ROOT=Path(r'C:\CodexRemoteWorker-AppServer-8788')
 DATA=Path(r'C:\CodexWorkerData-AppServer-8788')
 CONFIG=DATA/'private/codex-home/config.toml'
 TRIAL=ROOT/'config.trial.json'
 TASK='CodexWorker8788-Recovery'
+SOURCE_HOME=Path(r'C:\Users\Administrator\.codex')
 TERMINAL={'completed','needs_review','failed','cancelled','interrupted'}
 
 
 def replace_config(text,model,effort):
-    if not re.fullmatch(r'[A-Za-z0-9._/-]{1,100}',model) or effort not in ('none','minimal','low','medium','high','xhigh','max','ultra'):
+    if not re.fullmatch(r'[A-Za-z0-9._/:-]{1,200}',model) or effort not in ('default','none','minimal','low','medium','high','xhigh','max','ultra'):
         raise ValueError('模型或思考等级无效。')
     header,sep,rest=text.partition('\n[')
     for name,value in [('model',model),('model_reasoning_effort',effort)]:
-        pattern=r'(?m)^'+name+r'\s*=.*$'
+        pattern=r'(?m)^"?'+name+r'"?\s*=.*$'
+        if name=='model_reasoning_effort' and value=='default':
+            header=re.sub(pattern,'',header)
+            continue
         replacement=name+' = '+json.dumps(value)
         if re.search(pattern,header):header=re.sub(pattern,replacement,header)
         else:header+='\n'+replacement
@@ -76,14 +84,15 @@ def stop_owned():
         raise ValueError('服务进程归属不匹配，未停止进程。')
     try:handle=win32api.OpenProcess(0x1000|1|0x100000,False,record['ProcessId'])
     except win32api.error as exc:
-        if exc.winerror==87:return
-        raise
-    try:
-        if abs(win32process.GetProcessTimes(handle)['CreationTime'].timestamp()-record['created_at'])>.001:
-            raise ValueError('服务进程编号已被复用，未停止进程。')
-        win32api.TerminateProcess(handle,0)
-        if win32event.WaitForSingleObject(handle,10000)!=0:raise ValueError('服务进程未退出。')
-    finally:handle.Close()
+        if exc.winerror!=87:raise
+        handle=None
+    if handle is not None:
+        try:
+            if abs(win32process.GetProcessTimes(handle)['CreationTime'].timestamp()-record['created_at'])<=.001:
+                win32api.TerminateProcess(handle,0)
+                if win32event.WaitForSingleObject(handle,10000)!=0:raise ValueError('服务进程未退出。')
+            # A stale receipt does not authorize stopping a different process.
+        finally:handle.Close()
     import sys
     sys.path.insert(0,str(ROOT/'src'))
     from codex_remote_worker.windows import reconcile_process
@@ -112,10 +121,25 @@ def start_and_wait(expected):
     raise ValueError('新配置未通过就绪检查。')
 
 
-def apply(model,effort,channels=None):
+def current_source():
+    fallback=tomllib.loads(CONFIG.read_text(encoding='utf-8-sig')) if CONFIG.exists() else {}
+    return snapshot(SOURCE_HOME,fallback)
+
+
+def describe():
+    source=current_source()
+    trial=json.loads(TRIAL.read_text(encoding='utf-8-sig'))
+    return {**source['public'],'max_concurrent_jobs':trial['max_concurrent_jobs']}
+
+
+def apply(model,effort,channels=None,source_signature=None):
     from xml.etree import ElementTree as ET
-    state=ready()
-    allowed={m['model']:m['reasoning_efforts'] for m in state.get('available_models',[])}
+    source=current_source()
+    if source_signature is not None and source_signature!=source['public']['source_signature']:
+        raise ValueError('Codex 供应商或模型目录已变化，请刷新后重新应用。')
+    try:state=ready()
+    except Exception:state={}
+    allowed={m['model']:m['reasoning_efforts'] for m in source['public']['available_models']}
     if model not in allowed or effort not in allowed[model]:
         raise ValueError('所选模型或思考等级不在当前账户可用列表中。')
     original_bytes=CONFIG.read_bytes();original=original_bytes.decode('utf-8-sig');old=tomllib.loads(original)
@@ -123,13 +147,20 @@ def apply(model,effort,channels=None):
     if channels is None:channels=old_trial['max_concurrent_jobs']
     trial_replacement=replace_trial(trial_text,channels)
     expected=(model,effort,channels)
-    previous=(old['model'],old['model_reasoning_effort'],old_trial['max_concurrent_jobs'])
-    if previous==expected and old_trial.get('task_batch_concurrency')==1 and ready_matches(state,expected):
+    previous=(old.get('model'),old.get('model_reasoning_effort','default'),old_trial['max_concurrent_jobs'])
+    provider=source['public']['configured_provider']
+    replacement=replace_config(to_toml(source['config']),model,effort)
+    replacement+='\n[windows]\nsandbox="elevated"\n'
+    secret_files={CONFIG.parent/'auth.json':json.dumps(source['auth']),
+                  CONFIG.parent/'provider-env.json':json.dumps(source['env']),
+                  CONFIG.parent/'worker-models.json':json.dumps(source['public'],ensure_ascii=False)}
+    if (tomllib.loads(original)==tomllib.loads(replacement) and previous==expected and old_trial.get('authentication_mode')=='codex_auto'
+        and all(p.exists() and p.read_text(encoding='utf-8')==v for p,v in secret_files.items())
+        and ready_matches(state,expected) and state.get('configured_provider')==provider):
         return {'changed':False,'message':'所选配置已生效。'}
-    replacement=replace_config(original,model,effort)
     marker=DATA/'.maintenance.json';operation=uuid.uuid4().hex
     with marker.open('x',encoding='utf-8') as f:json.dump({'operation':operation,'reason':'desktop worker settings'},f)
-    disabled=False;changed=False
+    disabled=False;changed=False;secret_original={p:p.read_bytes() if p.exists() else None for p in secret_files}
     def release():
         if marker.exists() and json.loads(marker.read_text())['operation']==operation:marker.unlink()
     try:
@@ -143,18 +174,26 @@ def apply(model,effort,channels=None):
         backup=DATA/'maintenance-backups'/('settings-'+datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S')+'-'+operation[:8])
         backup.mkdir(parents=True);(backup/'config.toml').write_bytes(original_bytes)
         (backup/'config.trial.json').write_bytes(trial_bytes)
+        for p,v in secret_original.items():
+            if v is not None:(backup/p.name).write_bytes(v)
         assert_idle();stop_owned();changed=True
-        if (model,effort)!=previous[:2]:CONFIG.write_text(replacement,encoding='utf-8')
-        if channels!=previous[2] or old_trial.get('task_batch_concurrency')!=1:
-            TRIAL.write_text(trial_replacement,encoding='utf-8')
+        CONFIG.write_text(replacement,encoding='utf-8')
+        for p,v in secret_files.items():p.write_text(v,encoding='utf-8')
+        updated_trial=json.loads(trial_replacement);updated_trial['authentication_mode']='codex_auto'
+        TRIAL.write_text(json.dumps(updated_trial,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
         release()
         state=start_and_wait(expected)
+        if state.get('configured_provider')!=provider:raise ValueError('启动后的供应商与当前 Codex 不一致。')
         return {'changed':True,'message':f'配置已生效：全局 {channels} 路，同一整单顺序处理；8788 已重启并就绪。',
                 'model':model,'effort':effort,'channels':channels,'task_batch_concurrency':1}
     except Exception:
         if changed:
             try:
-                stop_owned();CONFIG.write_bytes(original_bytes);TRIAL.write_bytes(trial_bytes);release()
+                stop_owned();CONFIG.write_bytes(original_bytes);TRIAL.write_bytes(trial_bytes)
+                for p,v in secret_original.items():
+                    if v is None:p.unlink(missing_ok=True)
+                    else:p.write_bytes(v)
+                release()
                 start_and_wait(previous)
             except Exception:
                 raise ValueError('新配置启动失败，自动恢复未完成，请检查日志。') from None
@@ -166,11 +205,13 @@ def apply(model,effort,channels=None):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--model',required=True);parser.add_argument('--effort',required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--model');parser.add_argument('--effort')
+    parser.add_argument('--describe',action='store_true');parser.add_argument('--source-signature')
     parser.add_argument('--channels',type=int)
     args=parser.parse_args()
     try:
-        result=apply(args.model,args.effort,args.channels)
+        if args.describe:result=describe()
+        else:result=apply(args.model,args.effort,args.channels,args.source_signature)
         print(json.dumps({'ok':True,**result},ensure_ascii=False))
     except Exception as exc:
         # Never print credentials, configuration contents or unfiltered OS exceptions.

@@ -57,7 +57,7 @@ class Settings(BaseModel):
     tool_read_roots: list[Path] = Field(default_factory=list)
     service_token: SecretStr
     provider_env: dict[str, SecretStr] = Field(default_factory=dict, exclude=True)
-    authentication_mode: Literal["server_codex", "chatgpt"] = "server_codex"
+    authentication_mode: Literal["server_codex", "chatgpt", "codex_auto"] = "server_codex"
     protected_read_roots: list[Path] = Field(default_factory=list)
     windows_sandbox: Literal["elevated", "mxc"] = "elevated"
     bind_host: str = "127.0.0.1"

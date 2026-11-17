@@ -10,7 +10,9 @@ import uuid
 from .common import JobError, file_digest
 from .windows import WindowsProcess
 
-MAX_EVENT_BYTES = 1024 * 1024
+# A tool result can contain a whole project (outbound RPC accepts up to 8 MiB).
+# Echoed item/completed events need room for the result plus event metadata.
+MAX_EVENT_BYTES = 16 * 1024 * 1024
 
 
 class AppServerRpcError(JobError):
@@ -58,7 +60,7 @@ class AppServerRpc:
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='app-server-pipes')
         try:
             self.process = self.process_factory(command, self.root / 'work',
-                {**runtime_environment(self.settings, self.root), 'RUST_LOG': 'codex_app_server=info,codex_core=warn,codex_app_server_transport::transport::remote_control=error'},
+                {**runtime_environment(self.settings, self.root), 'RUST_LOG': 'codex_app_server=info,codex_app_server::outgoing_message=warn,codex_core=warn,codex_app_server_transport::transport::remote_control=error'},
                 'Local\\CodexWorkerAppServer8788-' + uuid.uuid4().hex)
             if self.root.name.startswith('appserver-protocol-'):
                 import os
@@ -244,7 +246,7 @@ class AppServerRpc:
                     self._fail('App Server stdout closed')
                     return
                 if len(line) > MAX_EVENT_BYTES:
-                    raise ValueError('App Server event exceeded one MiB')
+                    raise ValueError('App Server event exceeded transport size limit')
                 self.transport_bytes += len(line)
                 await self._dispatch(json.loads(line))
         except asyncio.CancelledError:

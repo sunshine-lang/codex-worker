@@ -55,7 +55,18 @@ def atomic_write(path: Path, data: bytes):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
+        # Windows readers/scanners can briefly deny replacement of an otherwise
+        # writable checkpoint. Retry only those OS errors; preserve the old file
+        # and surface persistent permission failures after a bounded delay.
+        for attempt, delay in enumerate((0, .01, .03, .08, .2)):
+            if delay:
+                time.sleep(delay)
+            try:
+                os.replace(temp, path)
+                break
+            except OSError as exc:
+                if os.name != 'nt' or getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 4:
+                    raise
     finally:
         temp.unlink(missing_ok=True)
 

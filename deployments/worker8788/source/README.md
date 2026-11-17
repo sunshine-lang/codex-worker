@@ -1,3 +1,5 @@
+> 本目录是 2026-11-17 部署中的 8788 完整应用源码。当前行为、配置与验证以 [8788 说明](../README.md) 为准；下面保留的是基线项目说明。
+
 # Codex Remote Worker
 
 > 目标机已有 Codex 官方订阅时，请用 **桌面当前用户版**：`dist/desktop-subscription-0.3.0/CodexWorkerSetup-0.3.0-Desktop.exe`。不填写模型/API Key；普通双击安装，不要管理员运行。见 [桌面订阅版说明](docs/DESKTOP_SUBSCRIPTION.md)。原服务器配置不变。

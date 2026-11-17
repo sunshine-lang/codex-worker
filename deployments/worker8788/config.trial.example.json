@@ -5,9 +5,9 @@
   "bind_host": "127.0.0.1",
   "codex_executable": "C:\\Path\\To\\codex.exe",
   "expected_codex_version": "REPLACE_WITH_INSTALLED_VERSION",
-  "max_concurrent_jobs": 8,
+  "max_concurrent_jobs": 1,
   "task_batch_concurrency": 1,
-  "authentication_mode": "chatgpt",
+  "authentication_mode": "codex_auto",
   "codex_home": "C:\\CodexWorkerData-AppServer-8788\\private\\codex-home",
   "project_context_enabled": true,
   "continuous_project_session": true

@@ -109,3 +109,26 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+def require_configured_login(settings, *, refresh=False):
+    config = effective_config(settings)
+    if settings.authentication_mode != 'codex_auto' or config.get('model_provider', 'openai') == 'openai':
+        return require_chatgpt_login(settings, refresh=refresh)
+    provider = config.get('model_providers', {}).get(config.get('model_provider'), {})
+    if not provider or provider.get('wire_api', 'responses') != 'responses':
+        raise JobError('PROVIDER_CONFIG_INVALID', '当前供应商需要有效的 Responses API 配置。', 503)
+    auth_path = settings.codex_home / 'auth.json'
+    try:
+        auth = json.loads(auth_path.read_text(encoding='utf-8')) if auth_path.is_file() else {}
+    except (OSError, ValueError):
+        raise JobError('PROVIDER_AUTH_INVALID', '无法读取当前供应商认证。', 503) from None
+    env_key = provider.get('env_key')
+    if env_key:
+        good = env_key in settings.provider_env
+    else:
+        good = bool(auth.get('OPENAI_API_KEY') or provider.get('experimental_bearer_token')
+                    or provider.get('http_headers', {}).get('Authorization'))
+    if not good:
+        raise JobError('PROVIDER_AUTH_REQUIRED', '当前供应商缺少 API 认证，请先在 Codex 中配置。', 503)
+    return {'passed': True, 'authentication_mode': 'codex_auto', 'model_called': False}

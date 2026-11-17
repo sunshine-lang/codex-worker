@@ -1,5 +1,15 @@
 # Codex Remote Worker
 
+**本分支最新同步：2026-11-17 的 8788 整单自主翻译版本。** 当前部署代码位于
+[deployments/worker8788/source](deployments/worker8788/source)，桌面程序位于
+[packaging/worker8788](packaging/worker8788)。从 [8788 说明](deployments/worker8788/README.md)
+进入；该版本包含官方订阅/OpenRouter 配置兼容、同会话自主翻译与自检、版本化进度保存和检查点恢复。
+每轮固定条数、工具固定条数和强制分页已取消，读取范围由 Codex 决定。
+
+根目录 `src/` 与下面的说明保留 2026-11-14 基线；不要把它与独立部署的 8788 源码混用。
+当前 8788 源码指纹见 [release-manifest.json](deployments/worker8788/release-manifest.json)，
+可运行 `python tools/verify_worker8788_snapshot.py` 校验。
+
 **本仓库发布的是 2026-11-14 当前服务器实际使用的 0.4.0 源码，不是之前的 0.3.0 或早期 0.4.0 迁移 ZIP。**
 
 当前版本号仍为 0.4.0；该号下包含后续整单任务接口、输入上下文分页等增量。具体代码以 Git commit 和

@@ -464,7 +464,8 @@ class TaskManager:
             self.worker.wakeup.set()
         job = self.jobs.get(job_id)
         execution = job.get('execution') or {}
-        task['codex_thread_id'] = execution.get('thread_id')
+        task['codex_thread_id'] = (execution.get('thread_id') or task.get('codex_thread_id')
+                                  or (job.get('project_resume') or {}).get('thread_id'))
         progress = execution.get('project_session') or {}
         task['session_progress'] = progress
         task['translated_rows'] = progress.get('draft_segments', 0)
@@ -482,10 +483,21 @@ class TaskManager:
 
     def _collect_session(self, task, job):
         execution = job.get('execution') or {}
+        if execution.get('project_controller_version') in ('ledger/1', 'ledger/2'):
+            progress = execution.get('project_session') or {}
+            turns = execution.get('project_turns') or []
+            verified_turns = (bool(turns) and len(turns) == len(execution.get('turn_ids', []))
+                and any(t.get('before', {}).get('phase') == 'reviewing' or
+                        t.get('after', {}).get('phase') == 'reviewing' for t in turns)
+                and progress.get('phase') == 'complete'
+                and progress.get('draft_segments') == task['total_rows']-task['tm_rows']
+                and progress.get('reviewed_segments') == task['total_rows'])
+        else:
+            verified_turns = len(execution.get('turn_ids', [])) == 2
         if (execution.get('exit_code') != 0 or execution.get('turn_completed') is not True
                 or execution.get('turn_failed') is True or execution.get('trace_complete') is not True
                 or execution.get('self_review_status') != 'completed' or not execution.get('thread_id')
-                or len(execution.get('turn_ids',[])) != 2):
+                or not verified_turns):
             raise JobError('EXECUTION_INVALID', '整单持续会话和最终检查未确认完成。')
         entry = next((a for a in job.get('artifacts',[]) if a['kind']=='translation'), None)
         if not entry:

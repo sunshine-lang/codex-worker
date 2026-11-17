@@ -286,9 +286,10 @@ def test_whole_task_tm_and_original_fields_still_preserved(adapter,settings):
 def test_real_windows_pipes_with_fixed_non_model_rpc_server(settings,tmp_path):
     from codex_remote_worker.windows import WindowsProcess
     fixture=tmp_path/'fixture_server.py'
-    fixture.write_text('import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if "id" in m: print(json.dumps({"id":m["id"],"result":{"platformFamily":"windows","ok":True}}),flush=True)\n',encoding='utf-8')
+    fixture.write_text('import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if "id" in m: print(json.dumps({"id":m["id"],"result":{"platformFamily":"windows","ok":True,"echo":m.get("params",{}).get("echo")}}),flush=True)\n',encoding='utf-8')
     root,_,_=prepared(tmp_path)
     def factory(command,cwd,env,name):
+        assert 'codex_app_server::outgoing_message=warn' in env['RUST_LOG']
         return WindowsProcess([str(settings.tool_python),str(fixture)],cwd,env,name)
     async def run():
         rpc=AppServerRpc(settings,root,Redactor(),process_factory=factory)
@@ -296,8 +297,29 @@ def test_real_windows_pipes_with_fixed_non_model_rpc_server(settings,tmp_path):
             result=await asyncio.wait_for(rpc.start(),8)
             assert result['ok']
             assert (await rpc.request('fixed/test',{},timeout=3))['ok']
+            full_material='controller source text '*100000
+            assert (await rpc.request('fixed/whole-project',{'echo':full_material},timeout=15))['echo']==full_material
         finally:
             await rpc.close()
+    asyncio.run(run())
+
+
+def test_full_project_tool_event_larger_than_one_mib_is_delivered(settings,tmp_path):
+    import io
+    from types import SimpleNamespace
+    async def run():
+        rpc=AppServerRpc(settings,tmp_path,Redactor())
+        text='whole project material '*100000
+        message={'method':'item/completed','params':{'threadId':'large-project','item':
+            {'type':'dynamicToolCall','contentItems':[{'type':'inputText','text':text}]}}}
+        rpc.process=SimpleNamespace(stdout=io.BytesIO(json.dumps(message).encode('utf-8')+b'\n'))
+        async def direct(function,*args):return function(*args)
+        rpc._blocking=direct
+        queue=rpc.subscribe('large-project')
+        await rpc._read_stdout()
+        received=queue.get_nowait()
+        assert received==message
+        assert rpc.failure=='App Server stdout closed'  # EOF after the complete event, not a size failure.
     asyncio.run(run())
 
 
