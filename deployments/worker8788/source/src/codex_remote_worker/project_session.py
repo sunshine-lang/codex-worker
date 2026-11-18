@@ -238,7 +238,8 @@ class ProjectSession:
             return []
         record = self.records[i]
         return check_row({'id': key, 'excel_row': i+1, 'source': record['source_text'],
-            'terms': [{'source': t['source_text'], 'target': t['target_text']} for t in record['tb_list']]}, value['target_text'])
+            'terms': [{'source': t['source_text'], 'target': t['target_text']} for t in record['tb_list']]},
+            value['target_text'], target_language=record['target_language'])
 
     def _read(self, args):
         if set(args) not in ({'operation', 'start', 'count', 'query', 'char_offset'},
@@ -293,7 +294,8 @@ class ProjectSession:
                 checks.extend(self.warnings(i))
                 v = self.values.get(str(i)) or self.plan['locked'].get(str(i))
                 if v:
-                    grouped.setdefault(normalized(r['source_text']), []).append((str(i), v['target_text']))
+                    pair = (r['source_language'].strip().casefold(), r['target_language'].strip().casefold())
+                    grouped.setdefault((*pair, normalized(r['source_text'])), []).append((str(i), v['target_text']))
             for rows in grouped.values():
                 if len({v for _,v in rows}) > 1:
                     checks.append({'rule':'repeated_source_variation', 'rows': rows,

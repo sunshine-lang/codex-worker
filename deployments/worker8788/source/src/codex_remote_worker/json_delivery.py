@@ -5,6 +5,7 @@ import re
 
 from .common import JobError
 from .contextual_tm import CONTEXTUAL_TM, contextual_candidates, resolve_tm_choice
+from .segment_languages import PER_SEGMENT, require_segment_languages
 from .tm_policy import PROJECT_CONTRACT, select_tm100
 
 CONTRACT = 'siemens-json/1'
@@ -58,6 +59,9 @@ def read_json_source(path):
         contextual = project and packet.get('tm_policy') == CONTEXTUAL_TM and packet.get('phase') == 'translate'
         if contextual:
             keys.add('tm_policy')
+        per_segment = project and packet.get('language_mode') == PER_SEGMENT
+        if per_segment:
+            keys.add('language_mode')
         if (set(packet) != keys or packet['contract'] not in JSON_CONTRACTS
                 or packet['phase'] not in {'translate', 'review'} or not isinstance(packet['rows'], list)):
             raise ValueError('invalid packet')
@@ -75,8 +79,11 @@ def read_json_source(path):
                 raise ValueError('invalid global row ID')
             ids.append(row['row_id'])
             record = row['record']
-            if (record.get('source_language') != 'en' or record.get('target_language') != 'zh-CN'
-                    or not text(record.get('source_text'))):
+            if per_segment:
+                require_segment_languages(record, int(row['row_id']) + 1)
+            elif record.get('source_language') != 'en' or record.get('target_language') != 'zh-CN':
+                raise ValueError('invalid legacy language pair')
+            if not text(record.get('source_text')):
                 raise ValueError('invalid source')
             for key in ('tb_list', 'tm_list'):
                 if not isinstance(record.get(key), list) or any(

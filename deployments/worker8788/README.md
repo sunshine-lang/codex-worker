@@ -1,5 +1,13 @@
 # 8788 整单持续 Codex 会话
 
+## 按句段语言对翻译
+
+`codex/8788-segment-languages-v2` 建立在 `codex/8788-contextual-tm-v2` 上。8788 空闲时停止服务、备份源码，将本分支的 `deployments/worker8788/source/src/codex_remote_worker/` 同步到 8788 安装目录的 `src/codex_remote_worker/`，再按原有方式启动服务。部署成功后，`GET /v1/tasks/capabilities` 的 `language_modes` 包含 `per-segment`。
+
+上游照常提交 `project_name` 和 `segments`。v2 从每个句段读取非空字符串 `source_language` 和 `target_language`，允许同单混合语言，例如一段 `ja → en`、一段 `en → zh-TW`。两项原值都随句段进入 Agent 和交付结果，包括没有地区标签的 `zh`。字段缺失时返回句段编号和字段名。该段的 TB/TM、三份上传资料和已有的回填顺序沿用原契约。资料中适用的术语与风格约束随目标语言使用，方向由该段 JSON 确定。
+
+Langflow v2 自动在 Worker 的 multipart `options` 中设置 `"language_mode":"per-segment"`。直接调用 Worker 时可使用同一选项，也可同时指定 `"tm_policy":"contextual-v2"`；两个选项独立。接单、查询及结果清单返回本单的语言模式。既有客户端和已接收的订单沿用其提交时的模式，同一幂等键不能切换模式。
+
 ## 按语境使用 100% TM
 
 新分支 `codex/8788-contextual-tm-v2` 包含动作查询版本。等 8788 空闲后，按原有方式停服务、备份当前源码，将本分支 `deployments/worker8788/source/src/codex_remote_worker/` 同步到 8788 安装目录的 `src/codex_remote_worker/`，再启动服务。相对于动作查询分支，此次更新涉及 `contextual_tm.py`、`translation_tasks.py`、`translation_task_api.py`、`json_delivery.py`、`project_session.py` 和 `app_server_text.py`。运行中的服务通过 `GET /v1/tasks/capabilities` 声明 `tm_policies` 包含 `contextual-v2`。

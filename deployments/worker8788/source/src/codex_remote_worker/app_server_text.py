@@ -16,6 +16,7 @@ from .runner import codex_config_digest
 from .subscription import effective_config, require_chatgpt_login, require_configured_login
 from .task_runtime import prepare_task_runtime
 from .task_tools import TaskTools, JSON_CONTRACTS
+from .segment_languages import PER_SEGMENT, LANGUAGE_INSTRUCTIONS
 from .project_context import ProjectContext, TOOL_SPEC, TOOL_NAME, PROJECT_INSTRUCTIONS
 from .project_session import (ProjectSession, TOOLS as SESSION_TOOLS, TOOL_NAMES as SESSION_TOOL_NAMES,
                               INSTRUCTIONS as SESSION_INSTRUCTIONS, LEGACY_TM_INSTRUCTIONS,
@@ -55,7 +56,7 @@ def output_schema(snapshot):
     return object_schema({'rows': array(object_schema(properties))})
 
 
-def text_thread_parameters(settings, root, *, project_context=False, project_session=False, contextual_tm=False):
+def text_thread_parameters(settings, root, *, project_context=False, project_session=False, contextual_tm=False, language_mode=None):
     params = thread_parameters(settings, root)
     params.update(environments=[], runtimeWorkspaceRoots=[], dynamicTools=[], selectedCapabilityRoots=[])
     instructions = INSTRUCTIONS
@@ -69,6 +70,8 @@ def text_thread_parameters(settings, root, *, project_context=False, project_ses
         if contextual_tm:
             instructions = instructions.replace(LEGACY_TM_INSTRUCTIONS, CONTEXTUAL_INSTRUCTIONS)
             params['dynamicTools'] = contextual_write_tools()
+    if language_mode == PER_SEGMENT:
+        instructions += '\n' + LANGUAGE_INSTRUCTIONS
     params['developerInstructions'] = instructions
     params['config'].update({'developer_instructions': instructions, 'features.shell_tool': False,
         'features.plugins': False, 'features.apps': False, 'features.multi_agent': False,
@@ -235,6 +238,7 @@ class TextAppServerRunner(AppServerRunner):
         self.project_context = None
         self.project_session = None
         self.project_controller = None
+        self.language_mode = job.get('language_mode')
         if self.settings.continuous_project_session and (root/'control/project-session.json').is_file():
             self.project_session = await asyncio.to_thread(ProjectSession, self.settings, root)
             self.project_controller = ProjectController(self.project_session)
@@ -245,7 +249,8 @@ class TextAppServerRunner(AppServerRunner):
     def thread_parameters(self, root):
         return text_thread_parameters(self.settings, root, project_context=self.project_context is not None,
                                       project_session=self.project_session is not None,
-                                      contextual_tm=bool(self.project_session and self.project_session.contextual_tm))
+                                      contextual_tm=bool(self.project_session and self.project_session.contextual_tm),
+                                      language_mode=getattr(self, 'language_mode', None))
 
     def turn_parameters(self, thread_id, prompt, root):
         if self.project_session is not None:

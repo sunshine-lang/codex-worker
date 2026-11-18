@@ -92,6 +92,8 @@ def prepare_record(job_id, request_key, manifest, options: Options, stage: Path,
         task.update(project_name=snapshot['project_name'], request_id=snapshot['request_id'],
                     model_rows=len(snapshot['rows']), tm_reused_rows=len(snapshot['tm_reuse']))
     write_json(stage / 'control' / 'task.json', task)
+    if snapshot.get('language_mode'):
+        task['language_mode'] = snapshot['language_mode']
     return task
 
 

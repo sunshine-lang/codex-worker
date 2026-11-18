@@ -39,8 +39,9 @@ def make_records(headers, rows, source_column='en', target_column='zh-CN'):
                         'original_target': row[target_index]})
     return headers, rows, records
 
-def check_row(record, translation):
+def check_row(record, translation, *, target_language='zh-CN'):
     en = record['source']
+    chinese_style = target_language.strip().lower().replace('_', '-').split('-')[0] == 'zh'
     issues = []
     def add(code, message, severity='error'):
         issues.append({'id':record['id'], 'excel_row':record['excel_row'], 'rule':code, 'severity':severity, 'message':message})
@@ -81,7 +82,7 @@ def check_row(record, translation):
     for match in re.finditer(voltage, source_numbers):
         unit = match[2]
         chinese = {'V': '伏', 'kV': '千伏', 'mV': '毫伏'}[unit]
-        if not re.search(r'(?<![A-Za-z])'+re.escape(unit)+r'(?![A-Za-z])',translation) and chinese not in translation:
+        if chinese_style and not re.search(r'(?<![A-Za-z])'+re.escape(unit)+r'(?![A-Za-z])',translation) and chinese not in translation:
             add('unit', '电压范围缺少单位：'+unit)
     tokens = re.findall(r'(?<!\w)[A-Za-z0-9]+(?:[-.][A-Za-z0-9.]+)*(?!\w)', identifier_source)
     codes = [t for t in tokens if re.search('[A-Za-z]',t) and re.search(r'\d',t)]
@@ -91,11 +92,11 @@ def check_row(record, translation):
     for token in re.findall(r'[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+|6SL[\w.\-]+', en):
         if token not in translation:
             add('identifier', '订货号或邮箱发生变化：' + token)
-    if re.search(r'[\u4e00-\u9fff][A-Za-z0-9]|[A-Za-z0-9][\u4e00-\u9fff]',translation):
+    if chinese_style and re.search(r'[\u4e00-\u9fff][A-Za-z0-9]|[A-Za-z0-9][\u4e00-\u9fff]',translation):
         add('spacing','中文与英文/数字之间缺少空格。')
-    if re.search(r'[\u4e00-\u9fff]',translation) and re.search(r'[,;"\u0027]',translation):
+    if chinese_style and re.search(r'[\u4e00-\u9fff]',translation) and re.search(r'[,;"\u0027]',translation):
         add('punctuation','中文语境中出现英文逗号、分号或直引号。')
-    if translation.count('“') != translation.count('”') or translation.count('（') != translation.count('）'):
+    if chinese_style and (translation.count('“') != translation.count('”') or translation.count('（') != translation.count('）')):
         add('punctuation','中文引号或括号不配对。')
     if re.search(r'\b\d+\s+Temp\.\s+\d+',en):
         add('source_ambiguity','原文温度输入标记含混，需核对源文；不得擅自删除或猜测第二个数字。','warning')

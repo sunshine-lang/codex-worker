@@ -1,6 +1,6 @@
 {
-  "purpose": "8788 source for opt-in contextual decisions on exact translation memory; includes task activity reporting. Windows activation is pending operator deployment.",
-  "captured_at_utc": "2026-11-18T09:51:01.777677+00:00",
+  "purpose": "8788 source for opt-in per-segment source/target languages, with contextual TM and task activity. Windows activation is pending operator deployment.",
+  "captured_at_utc": "2026-11-18T11:41:37.964537+00:00",
   "controller_version": "ledger/2",
   "runtime_profile": {
     "provider": "openai",
@@ -19,18 +19,18 @@
     "app_server_rpc.py": "a2e928b0b2297d81f3bb6437db9f3ac142813eada28e216cd8d54ff0281b1615",
     "app_server_runner.py": "d90fc014ae5dbdc04b463e71781325ffe9241cea7dc5609538353012cc8001dd",
     "app_server_service.py": "7d71de71a249931db7f7c0376b7c14abd1beed1bb8c1eb17c257e7a885a9c6e1",
-    "app_server_text.py": "99f03d3545a1d9a8af6a169ba8513c4ae30e30d305f58b8369b0580d015e8cd0",
+    "app_server_text.py": "e83bf0b2a00952a1584407300148e49960d2f210c41e2289fde0aaf29d0914f5",
     "common.py": "162bcdc2a1dfbdb8d2f55d22d921d3c26f048e72ebc9cb94c8fa69c4879738e7",
     "config.py": "28fd17c96809290c2bf3be979746a03f26b5acab3847d647a6a9fc3b1c4229fd",
     "doctor.py": "9022aef00cdfd222e13ee11f0452ecab5cc418d4bc6225098a9401ed8d2a2532",
-    "files.py": "312e112b70e02e678b6d653d5c98ebdc31a1db2bc93c109c7b42257a129a61cd",
-    "json_delivery.py": "fdd2c59dc74c659cfebc17cd4aed2509a570c723b0d10be36d4ee086fe075798",
+    "files.py": "559454f15445749b5fb12a3c58756ccc13ebf13e6e1350dad084bf58802669c4",
+    "json_delivery.py": "702b0c17b83c355b32d5c7e9e1e08f4be06ff9e83866dd56155f68823b3b611e",
     "project_archive.py": "8d5ea18107f81040e139dae089ba9e55cbc802501af0c2668d18d08eb667d4dd",
     "project_context.py": "314f03e24b4c63359dd007faac762a9f9769e45d0e85ff247f0b55f9c50e24a2",
     "project_controller.py": "efeb081bcd3b1542ceb5481a352003e60f707bd4f8a48fd261a0c4a568249d5b",
     "project_recovery.py": "059f5527dcb7328610cf820bc3ebf7beacce9383525d376edde45c40c6ff9157",
-    "project_session.py": "b1fd25e0c49e85514d9afce2da7bce8a69901292cbb0a71974e4434777e85ad2",
-    "qa.py": "c5c4c8fb11b2e07d970f348196a56560729717b8af9b496f874d7db5e446e0fc",
+    "project_session.py": "2eaec960c16a592ef2e549a13c82283ed8651aa4ba6fdd06b228cd73e5553775",
+    "qa.py": "f009445c6532eb9472b651a0bf25fa2496d285b3722c6c967ffdc6ba51417ac2",
     "runner.py": "15af4a3e130e3b8a32e930fac652940d1e627f071abda9e7f0b339077d6e5892",
     "sandbox_state.py": "69485377166aa13a03af0ee96868af361cc49c6be9dd76ec2c6c5768672a203c",
     "service.py": "220caeea809f7da4dabceb91a414d372171855bd6f6a6c188f5969f9c6c6d320",
@@ -39,12 +39,13 @@
     "task_runtime.py": "16f6e0b939cf5b03580957b4735650fd3f91102b8719b589802c14dbf137b913",
     "task_tools.py": "00ded0495319d981c8c0409e4e30ab2612972e5f371aa2ff19eff9f2e75c9eb8",
     "tm_policy.py": "36d6a03c6d43f79ec9d8f7e59bdc43d5a072536a41a888410d815893d3403cc9",
-    "translation_task_api.py": "cb3dc8bbd114913176b00e56299eee20b7d6c6594fb2a2a35aa25c8989fff40d",
-    "translation_tasks.py": "78f48501e1bcda66b103ac0ffdeaccc436cf5f29b69c25f4fd506bcb012e886d",
+    "translation_task_api.py": "9eb33b6d6902bf1db1f224d210fe2e2830d7d1ad773a655b9a283df366f6f17e",
+    "translation_tasks.py": "2eb22d12cf52b75c93c87a7812fce61d0694271ba5aee331326dfc2ab079049a",
     "windows.py": "10d4a15d6cc9a0713df9321120d95988a2d55c54c3d897e0bc6b51dbbf54cdc0",
     "worker.py": "eede47db0509fcc0cf04efc95c7a22e82a18b12b853aa10034b8badd2e5280f8",
     "project_activity.py": "805989b0a9610d08042503083ada28689144d9e49ad08b77b51e0a1e8dbeb4a1",
-    "contextual_tm.py": "d79e745b268307642a714e4ad0ee02084c106fa99199972f646061dbcf69ae5f"
+    "contextual_tm.py": "d79e745b268307642a714e4ad0ee02084c106fa99199972f646061dbcf69ae5f",
+    "segment_languages.py": "dbead92b93b0eb74e16d204f67fade2dc21c97af67b2857f3b433eaf51c0878a"
   },
   "live_source_bytes_verified": false,
   "deployed_byte_matches": {
@@ -58,12 +59,10 @@
     "deployments/worker8788/source/src/codex_remote_worker/common.py": "src/codex_remote_worker/common.py",
     "deployments/worker8788/source/src/codex_remote_worker/config.py": "src/codex_remote_worker/config.py",
     "deployments/worker8788/source/src/codex_remote_worker/doctor.py": "src/codex_remote_worker/doctor.py",
-    "deployments/worker8788/source/src/codex_remote_worker/files.py": "src/codex_remote_worker/files.py",
     "deployments/worker8788/source/src/codex_remote_worker/project_archive.py": "src/codex_remote_worker/project_archive.py",
     "deployments/worker8788/source/src/codex_remote_worker/project_context.py": "src/codex_remote_worker/project_context.py",
     "deployments/worker8788/source/src/codex_remote_worker/project_controller.py": "src/codex_remote_worker/project_controller.py",
     "deployments/worker8788/source/src/codex_remote_worker/project_recovery.py": "src/codex_remote_worker/project_recovery.py",
-    "deployments/worker8788/source/src/codex_remote_worker/qa.py": "src/codex_remote_worker/qa.py",
     "deployments/worker8788/source/src/codex_remote_worker/runner.py": "src/codex_remote_worker/runner.py",
     "deployments/worker8788/source/src/codex_remote_worker/sandbox_state.py": "src/codex_remote_worker/sandbox_state.py",
     "deployments/worker8788/source/src/codex_remote_worker/service.py": "src/codex_remote_worker/service.py",
@@ -91,18 +90,19 @@
   "validation": {
     "branch_suite": {
       "platform": "macOS",
-      "passed": 405,
+      "passed": 413,
       "skipped": 43,
       "deselected": 4
     },
     "native_windows_activation": "pending",
     "base_windows_report": "deployments/worker8788/VALIDATION.zh-CN.md",
-    "contextual_tm_model": "scripted App Server tool calls"
+    "contextual_tm_model": "scripted App Server tool calls",
+    "segment_language_acceptance": "Local Codex translated ja to en and en to zh-TW from Worker tool-read rows; Worker HTTP and Langflow v2 restored the original segment IDs. Windows runtime deployment pending."
   },
   "files": [
     {
       "path": "README.md",
-      "sha256": "445dad79f8f153757f4b13605b780c2dbd400efabf83951fcc862a103837adec"
+      "sha256": "00b68625437a9fee6fa29a1367ed50de1ce61353bc435d4927de9389c4c0a04f"
     },
     {
       "path": "deployments/worker8788/CONTINUOUS_SESSION.zh-CN.md",
@@ -114,7 +114,7 @@
     },
     {
       "path": "deployments/worker8788/README.md",
-      "sha256": "c1a12b3117005813a1e69f1c1e91dbcc56947faff0b0e37b84cb417bb7761537"
+      "sha256": "4a0bfc990ce8abbe82e0436fbb25a3100db78543de4aa4cfb97eb1758e9a0b8b"
     },
     {
       "path": "deployments/worker8788/RECOVERY.zh-CN.md",
@@ -562,7 +562,7 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/app_server_text.py",
-      "sha256": "99f03d3545a1d9a8af6a169ba8513c4ae30e30d305f58b8369b0580d015e8cd0"
+      "sha256": "e83bf0b2a00952a1584407300148e49960d2f210c41e2289fde0aaf29d0914f5"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/common.py",
@@ -582,11 +582,11 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/files.py",
-      "sha256": "312e112b70e02e678b6d653d5c98ebdc31a1db2bc93c109c7b42257a129a61cd"
+      "sha256": "559454f15445749b5fb12a3c58756ccc13ebf13e6e1350dad084bf58802669c4"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/json_delivery.py",
-      "sha256": "fdd2c59dc74c659cfebc17cd4aed2509a570c723b0d10be36d4ee086fe075798"
+      "sha256": "702b0c17b83c355b32d5c7e9e1e08f4be06ff9e83866dd56155f68823b3b611e"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/project_activity.py",
@@ -610,11 +610,11 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/project_session.py",
-      "sha256": "b1fd25e0c49e85514d9afce2da7bce8a69901292cbb0a71974e4434777e85ad2"
+      "sha256": "2eaec960c16a592ef2e549a13c82283ed8651aa4ba6fdd06b228cd73e5553775"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/qa.py",
-      "sha256": "c5c4c8fb11b2e07d970f348196a56560729717b8af9b496f874d7db5e446e0fc"
+      "sha256": "f009445c6532eb9472b651a0bf25fa2496d285b3722c6c967ffdc6ba51417ac2"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/runner.py",
@@ -623,6 +623,10 @@
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/sandbox_state.py",
       "sha256": "69485377166aa13a03af0ee96868af361cc49c6be9dd76ec2c6c5768672a203c"
+    },
+    {
+      "path": "deployments/worker8788/source/src/codex_remote_worker/segment_languages.py",
+      "sha256": "dbead92b93b0eb74e16d204f67fade2dc21c97af67b2857f3b433eaf51c0878a"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/service.py",
@@ -650,11 +654,11 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/translation_task_api.py",
-      "sha256": "cb3dc8bbd114913176b00e56299eee20b7d6c6594fb2a2a35aa25c8989fff40d"
+      "sha256": "9eb33b6d6902bf1db1f224d210fe2e2830d7d1ad773a655b9a283df366f6f17e"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/translation_tasks.py",
-      "sha256": "78f48501e1bcda66b103ac0ffdeaccc436cf5f29b69c25f4fd506bcb012e886d"
+      "sha256": "2eb22d12cf52b75c93c87a7812fce61d0694271ba5aee331326dfc2ab079049a"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/windows.py",
@@ -801,6 +805,10 @@
       "sha256": "2ae56d2ca337b8e5fd0b9a3e8ee34d7f17d8e69954d967498105543f19ca9352"
     },
     {
+      "path": "deployments/worker8788/source/tests/test_segment_languages.py",
+      "sha256": "1e872acbcb6366c97e2091ccbfc4f7306b536ccf56e88a97422c0a80e1622223"
+    },
+    {
       "path": "deployments/worker8788/source/tests/test_subscription.py",
       "sha256": "f9b96e8bf7d6d26fc627c2e9c9d4f098d76bcf7e992ae9ed781d8e9a2e56cb9b"
     },
@@ -866,5 +874,5 @@
     }
   ],
   "base_deployment_commit": "c89493ef7ffec77b18f0f474488b2e1d74d62ff7",
-  "base_feature_commit": "d7626569ca8b0e3fca71cd7989d053be4eaec56a"
+  "base_feature_commit": "9294fbb7dd1c3bf23fd965e3be5380777aadfa8c"
 }

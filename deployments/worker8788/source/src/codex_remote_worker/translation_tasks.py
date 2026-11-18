@@ -22,6 +22,7 @@ from .tm_policy import select_tm100
 from .project_activity import activity_progress
 from .contextual_tm import CONTEXTUAL_TM, contextual_auto, contextual_candidates, tm_receipt, verify_tm_report
 from .qa import check_row
+from .segment_languages import PER_SEGMENT, LANGUAGE_INSTRUCTIONS, require_segment_languages
 
 TASK_CONTRACT = 'translation-task/1'
 TASK_TERMINAL = {'completed', 'failed'}
@@ -37,7 +38,9 @@ class BatchPolicy:
             raise ValueError('Invalid server batch policy')
 
 
-def plan_request(original, policy, *, tm_policy=None):
+def plan_request(original, policy, *, tm_policy=None, language_mode=None):
+    if language_mode not in (None, PER_SEGMENT):
+        raise JobError('INVALID_LANGUAGE_MODE', '未知的订单语言模式。')
     project = isinstance(original, dict) and 'source_text' not in original and ('segments' in original or 'project_name' in original)
     if project:
         project_name, rows = original.get('project_name'), original.get('segments')
@@ -53,10 +56,13 @@ def plan_request(original, policy, *, tm_policy=None):
         if not isinstance(original_row, dict):
             raise JobError('INVALID_TASK_INPUT', '每条记录必须是对象。')
         row = copy.deepcopy(original_row)
-        if row.get('target_language') == 'zh':
-            row['target_language'] = 'zh-CN'
-        if row.get('source_language') != 'en' or row.get('target_language') != 'zh-CN':
-            raise JobError('UNSUPPORTED_LANGUAGE', '当前 Worker 支持 en → zh / zh-CN。')
+        if language_mode == PER_SEGMENT:
+            require_segment_languages(row, index + 1)
+        else:
+            if row.get('target_language') == 'zh':
+                row['target_language'] = 'zh-CN'
+            if row.get('source_language') != 'en' or row.get('target_language') != 'zh-CN':
+                raise JobError('UNSUPPORTED_LANGUAGE', '旧版订单支持 en → zh / zh-CN。')
         if not isinstance(row.get('source_text'), str) or not row['source_text'].strip():
             raise JobError('INVALID_TASK_INPUT', 'source_text 必须是非空字符串。')
         if row.get('target_text') is not None and not isinstance(row['target_text'], str):
@@ -80,7 +86,7 @@ def plan_request(original, policy, *, tm_policy=None):
                     terms = [{'source': t.get('source_surface') or t['source_text'], 'target': t['target_text']}
                              for t in row['tb_list'] if t.get('enabled') is not False]
                     if check_row({'source': row['source_text'], 'terms': terms, 'id': str(index),
-                                  'excel_row': index + 1}, selection['target_text']):
+                                  'excel_row': index + 1}, selection['target_text'], target_language=row['target_language']):
                         selection = None
             else:
                 selection = select_tm100(row)
@@ -108,20 +114,23 @@ def plan_request(original, policy, *, tm_policy=None):
             notes.append({'row_id': str(index), 'code': 'OVERSIZE_SEGMENT', 'message': '单条独立成批；字符预算不是模型 token 容量保证。'})
     if current:
         batches.append(current)
-    return {**({'tm_policy': tm_policy} if tm_policy else {}), 'original': original, 'records': normalized, 'project': project, 'project_name': project_name,
+    modes = {k: v for k, v in (('tm_policy', tm_policy), ('language_mode', language_mode)) if v is not None}
+    return {**modes, 'original': original, 'records': normalized, 'project': project, 'project_name': project_name,
             'locked': locked, 'pending': pending, 'batches': batches, 'notes': notes}
 
 
 def batch_packet(plan, indices, task_id):
-    return {**({'tm_policy': plan['tm_policy']} if plan.get('tm_policy') else {}),
+    modes = {k: plan[k] for k in ('tm_policy', 'language_mode') if k in plan}
+    return {**modes,
             'contract': 'siemens-json/2', 'phase': 'translate', 'project_name': plan['project_name'], 'request_id': task_id,
             'rows': [{'row_id': str(i), 'record': plan['records'][i], 'memory': {'terms': [], 'examples': []},
                       'source_units': [{'id': 1, 'source': plan['records'][i]['source_text']}], 'term_decisions': []} for i in indices],
             'tm_reuse': []}
 
 
-def batch_prompt(original):
-    return '''本次为整单翻译任务的一个批次，输入为 source_file.json，协议 siemens-json/2。
+def batch_prompt(original, *, language_mode=None):
+    direction = LANGUAGE_INSTRUCTIONS + '\n' if language_mode == PER_SEGMENT else ''
+    return direction + '''本次为整单翻译任务的一个批次，输入为 source_file.json，协议 siemens-json/2。
 请按当前工作目录中的项目指南、通用准则和下方原始翻译 Prompt 完成 rows 中的条目。
 100% TM 已由宿主程序处理；此批次只含需要模型翻译的条目。
 只在最终消息返回纯 JSON：{"rows":[{"row_id":"原行号","target_text":"完整译文","term_decisions":[]}]}。
@@ -201,7 +210,7 @@ def public_task(task, *, include_actions=False):
     active = list(dict.fromkeys(active))
     if task['status'] in TASK_TERMINAL:
         active = []
-    tm_fields = {k: task[k] for k in ('tm_policy', 'tm_summary', 'tm_decisions_sha256') if k in task}
+    tm_fields = {k: task[k] for k in ('language_mode', 'tm_policy', 'tm_summary', 'tm_decisions_sha256') if k in task}
     return {**tm_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
             'review_status': 'not_started', 'result_kind': 'translation_candidate',
@@ -251,7 +260,7 @@ class TaskManager:
         (stage/'results').mkdir()
         return task_id, stage
 
-    def accept(self, task_id, stage, manifest, options, key, *, tm_policy=None):
+    def accept(self, task_id, stage, manifest, options, key, *, tm_policy=None, language_mode=None):
         source = contained_file(stage.resolve(), stage/'input'/manifest['source_file']['filename'])
         if source.suffix.lower() != '.json':
             raise JobError('INVALID_TASK_INPUT', '整单任务的 source_file 必须是 JSON。')
@@ -261,8 +270,8 @@ class TaskManager:
             raise JobError('INVALID_TASK_INPUT', '输入不是有效 UTF-8 JSON。') from exc
         if tm_policy is not None and (tm_policy != CONTEXTUAL_TM or not self.settings.continuous_project_session):
             raise JobError('TM_POLICY_UNAVAILABLE', '按语境处理 TM 需要支持该策略的整单会话 Worker。')
-        plan = plan_request(original, self.policy, tm_policy=tm_policy)
-        policy_fields = {'tm_policy': tm_policy} if tm_policy else {}
+        plan = plan_request(original, self.policy, tm_policy=tm_policy, language_mode=language_mode)
+        policy_fields = {k: plan[k] for k in ('tm_policy', 'language_mode') if k in plan}
         write_json(stage/'plan.json', plan)
         created = now()
         record = {**policy_fields, 'task_id': task_id, 'request_key': key,
@@ -311,7 +320,7 @@ class TaskManager:
             if session:
                 shutil.copyfile(prompt_path, stage/'input/prompt_file.md')
             else:
-                (stage/'input/prompt_file.md').write_text(batch_prompt(prompt_path.read_text(encoding='utf-8-sig')), encoding='utf-8')
+                (stage/'input/prompt_file.md').write_text(batch_prompt(prompt_path.read_text(encoding='utf-8-sig'), language_mode=plan.get('language_mode')), encoding='utf-8')
             filenames = {'source_file': 'source_file.json', 'prompt_file': 'prompt_file.md'}
             for role in ('project_style', 'general_style'):
                 entry = task['inputs'][role]
@@ -610,7 +619,7 @@ class TaskManager:
                 'job_id':batch.get('job_id'), 'available':available,
                 'sha256':batch.get('result_sha256') if available else None,
                 'result_path':f'/v1/tasks/{task_id}/batches/{index}' if available else None})
-        tm_fields = {}
+        tm_fields = {k: task[k] for k in ('language_mode',) if k in task}
         if task.get('tm_policy') == CONTEXTUAL_TM:
             tm_fields['tm_policy'] = CONTEXTUAL_TM
             if task['status'] == 'completed':

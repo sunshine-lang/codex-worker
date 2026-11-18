@@ -14,12 +14,14 @@ from starlette.datastructures import UploadFile
 from .common import JobError, ROLES
 from .config import Options
 from .contextual_tm import CONTEXTUAL_TM
+from .segment_languages import PER_SEGMENT
 from .files import ensure_space, receive_files
 from .translation_tasks import BatchPolicy, TaskManager, TASK_CONTRACT, public_task
 
 
 class TranslationTaskOptions(Options):
     tm_policy: Literal['contextual-v2'] | None = None
+    language_mode: Literal['per-segment'] | None = None
 
 
 def install_translation_tasks(app, settings, authorized, *, policy=None):
@@ -44,6 +46,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
     async def capabilities():
         return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'tm_policies': [CONTEXTUAL_TM] if settings.continuous_project_session else [],
+                'language_modes': [PER_SEGMENT],
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
                 'semantic_review': False, 'max_segments': 10000, 'task_recent_actions': settings.continuous_project_session,
                 'codex_self_review': settings.continuous_project_session,
@@ -76,7 +79,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
                     task_options = TranslationTaskOptions.model_validate_json(form['options'])
                     options = Options(timeout_seconds=task_options.timeout_seconds)
                 except ValidationError:
-                    raise JobError('INVALID_OPTIONS', '整单参数只接受 timeout_seconds 和可选的 tm_policy。') from None
+                    raise JobError('INVALID_OPTIONS', '请检查 timeout_seconds、tm_policy 和 language_mode。') from None
                 ensure_space(settings)
                 manifest = await receive_files(settings, {role: form[role] for role in ROLES}, stage)
                 if manager.store.by_key(key) is None:
@@ -84,7 +87,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
                     if not ready.get('ready'):
                         raise JobError('NOT_READY', ready.get('message', 'Worker 尚未就绪。'), 503)
                 task, reused = await asyncio.to_thread(manager.accept, task_id, stage, manifest, options, key,
-                                                     tm_policy=task_options.tm_policy)
+                                                     tm_policy=task_options.tm_policy, language_mode=task_options.language_mode)
                 manager.wakeup.set()
                 return JSONResponse({**public_task(task), 'reused_submission': reused}, status_code=200 if reused else 202)
         finally:
