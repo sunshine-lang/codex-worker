@@ -1,6 +1,6 @@
 {
-  "purpose": "Complete current 8788 source, desktop, runtime, tests and documentation snapshot; no credentials, customer data or binaries",
-  "captured_at_utc": "2026-11-17T06:57:10.926697+00:00",
+  "purpose": "8788 source for opt-in completed task activities. Windows activation is pending operator deployment.",
+  "captured_at_utc": "2026-11-18T08:19:38.163497+00:00",
   "controller_version": "ledger/2",
   "runtime_profile": {
     "provider": "openai",
@@ -17,7 +17,7 @@
     "app.py": "a3e2410bfc4d97645fd0378647e020da900293cd082270291417eba4a13c02f7",
     "app_server_pool.py": "b431d5005fabe93501f9d2831bfb85b4a4e1715a2fbcc8190cb195b6aed95022",
     "app_server_rpc.py": "a2e928b0b2297d81f3bb6437db9f3ac142813eada28e216cd8d54ff0281b1615",
-    "app_server_runner.py": "56502e103e48072a170da3ccb9cee8eee851f53b985e7e96c7442cde1c2e45ab",
+    "app_server_runner.py": "d90fc014ae5dbdc04b463e71781325ffe9241cea7dc5609538353012cc8001dd",
     "app_server_service.py": "7d71de71a249931db7f7c0376b7c14abd1beed1bb8c1eb17c257e7a885a9c6e1",
     "app_server_text.py": "e2d4219a42764dfd1d1f51b6740cca874bc24accbea89bf17c496c51dfb25691",
     "common.py": "162bcdc2a1dfbdb8d2f55d22d921d3c26f048e72ebc9cb94c8fa69c4879738e7",
@@ -29,7 +29,7 @@
     "project_context.py": "314f03e24b4c63359dd007faac762a9f9769e45d0e85ff247f0b55f9c50e24a2",
     "project_controller.py": "efeb081bcd3b1542ceb5481a352003e60f707bd4f8a48fd261a0c4a568249d5b",
     "project_recovery.py": "059f5527dcb7328610cf820bc3ebf7beacce9383525d376edde45c40c6ff9157",
-    "project_session.py": "4af6422947de300b67616ac6efc4b7679224b71cd2dd6a28abe2d00b4de73d30",
+    "project_session.py": "54c0d3608af4867250a599f4a1a99fe93e7a91c89ff93eda038160b445088aea",
     "qa.py": "c5c4c8fb11b2e07d970f348196a56560729717b8af9b496f874d7db5e446e0fc",
     "runner.py": "15af4a3e130e3b8a32e930fac652940d1e627f071abda9e7f0b339077d6e5892",
     "sandbox_state.py": "69485377166aa13a03af0ee96868af361cc49c6be9dd76ec2c6c5768672a203c",
@@ -39,12 +39,13 @@
     "task_runtime.py": "16f6e0b939cf5b03580957b4735650fd3f91102b8719b589802c14dbf137b913",
     "task_tools.py": "00ded0495319d981c8c0409e4e30ab2612972e5f371aa2ff19eff9f2e75c9eb8",
     "tm_policy.py": "36d6a03c6d43f79ec9d8f7e59bdc43d5a072536a41a888410d815893d3403cc9",
-    "translation_task_api.py": "be6e9501accf2fd35d99f3086eb0b3740d676932686ad84934fa6564a013996d",
-    "translation_tasks.py": "c1101a9a19a04163ea09745175c5a3e2d785fa76e6da4a91e4f409254f396cae",
+    "translation_task_api.py": "e960d081bdeaecef52dcf3aea9980ea9dfe2f74240ca09770a4db5d6e41bd066",
+    "translation_tasks.py": "a48d772b6d61e4a3052cc1d1d5769fd309b954763f4fde372f2372218cd74c0c",
     "windows.py": "10d4a15d6cc9a0713df9321120d95988a2d55c54c3d897e0bc6b51dbbf54cdc0",
-    "worker.py": "eede47db0509fcc0cf04efc95c7a22e82a18b12b853aa10034b8badd2e5280f8"
+    "worker.py": "eede47db0509fcc0cf04efc95c7a22e82a18b12b853aa10034b8badd2e5280f8",
+    "project_activity.py": "805989b0a9610d08042503083ada28689144d9e49ad08b77b51e0a1e8dbeb4a1"
   },
-  "live_source_bytes_verified": true,
+  "live_source_bytes_verified": false,
   "deployed_byte_matches": {
     "deployments/worker8788/source/src/codex_remote_worker/__init__.py": "src/codex_remote_worker/__init__.py",
     "deployments/worker8788/source/src/codex_remote_worker/__main__.py": "src/codex_remote_worker/__main__.py",
@@ -52,7 +53,6 @@
     "deployments/worker8788/source/src/codex_remote_worker/app.py": "src/codex_remote_worker/app.py",
     "deployments/worker8788/source/src/codex_remote_worker/app_server_pool.py": "src/codex_remote_worker/app_server_pool.py",
     "deployments/worker8788/source/src/codex_remote_worker/app_server_rpc.py": "src/codex_remote_worker/app_server_rpc.py",
-    "deployments/worker8788/source/src/codex_remote_worker/app_server_runner.py": "src/codex_remote_worker/app_server_runner.py",
     "deployments/worker8788/source/src/codex_remote_worker/app_server_service.py": "src/codex_remote_worker/app_server_service.py",
     "deployments/worker8788/source/src/codex_remote_worker/app_server_text.py": "src/codex_remote_worker/app_server_text.py",
     "deployments/worker8788/source/src/codex_remote_worker/common.py": "src/codex_remote_worker/common.py",
@@ -64,7 +64,6 @@
     "deployments/worker8788/source/src/codex_remote_worker/project_context.py": "src/codex_remote_worker/project_context.py",
     "deployments/worker8788/source/src/codex_remote_worker/project_controller.py": "src/codex_remote_worker/project_controller.py",
     "deployments/worker8788/source/src/codex_remote_worker/project_recovery.py": "src/codex_remote_worker/project_recovery.py",
-    "deployments/worker8788/source/src/codex_remote_worker/project_session.py": "src/codex_remote_worker/project_session.py",
     "deployments/worker8788/source/src/codex_remote_worker/qa.py": "src/codex_remote_worker/qa.py",
     "deployments/worker8788/source/src/codex_remote_worker/runner.py": "src/codex_remote_worker/runner.py",
     "deployments/worker8788/source/src/codex_remote_worker/sandbox_state.py": "src/codex_remote_worker/sandbox_state.py",
@@ -74,8 +73,6 @@
     "deployments/worker8788/source/src/codex_remote_worker/task_runtime.py": "src/codex_remote_worker/task_runtime.py",
     "deployments/worker8788/source/src/codex_remote_worker/task_tools.py": "src/codex_remote_worker/task_tools.py",
     "deployments/worker8788/source/src/codex_remote_worker/tm_policy.py": "src/codex_remote_worker/tm_policy.py",
-    "deployments/worker8788/source/src/codex_remote_worker/translation_task_api.py": "src/codex_remote_worker/translation_task_api.py",
-    "deployments/worker8788/source/src/codex_remote_worker/translation_tasks.py": "src/codex_remote_worker/translation_tasks.py",
     "deployments/worker8788/source/src/codex_remote_worker/windows.py": "src/codex_remote_worker/windows.py",
     "deployments/worker8788/source/src/codex_remote_worker/worker.py": "src/codex_remote_worker/worker.py",
     "deployments/worker8788/runtime/launch-packaged-user.ps1": "launch-packaged-user.ps1",
@@ -93,17 +90,19 @@
   "local_desktop_build_sha256": "890a78196c7da89225a44e98507d2abc291f01ec76966e2bc0c25fcedb476432",
   "desktop_build_note": "C# source compiles successfully; generated PE timestamps may change its fingerprint. Binaries are not included.",
   "validation": {
-    "current_8788_suite": {
-      "passed": 432,
-      "skipped": 7,
+    "branch_suite": {
+      "platform": "macOS",
+      "passed": 400,
+      "skipped": 43,
       "deselected": 4
     },
-    "details": "deployments/worker8788/VALIDATION.zh-CN.md"
+    "native_windows_activation": "pending",
+    "base_windows_report": "deployments/worker8788/VALIDATION.zh-CN.md"
   },
   "files": [
     {
       "path": "README.md",
-      "sha256": "bc0079a7a52e65b5114e2d07cb9209fa8c38d4b98ae70c117f30bdd5bec04f9b"
+      "sha256": "782cbe553def329a83fac537976d8a8b537b70df83ecc7584cbfc2fb9ac2a736"
     },
     {
       "path": "deployments/worker8788/CONTINUOUS_SESSION.zh-CN.md",
@@ -115,7 +114,7 @@
     },
     {
       "path": "deployments/worker8788/README.md",
-      "sha256": "07c6bbd8174272deb83a1ee5480525b6b53b8c50ebe712029b01eb4c05be3e9c"
+      "sha256": "85817884d35a4a2f6d64e240217413d10ba96dc64e0b85755b53f861f45004d6"
     },
     {
       "path": "deployments/worker8788/RECOVERY.zh-CN.md",
@@ -555,7 +554,7 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/app_server_runner.py",
-      "sha256": "56502e103e48072a170da3ccb9cee8eee851f53b985e7e96c7442cde1c2e45ab"
+      "sha256": "d90fc014ae5dbdc04b463e71781325ffe9241cea7dc5609538353012cc8001dd"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/app_server_service.py",
@@ -586,6 +585,10 @@
       "sha256": "2bcf1f6fb6f9d0f00046cd13c52d3ab508ab5b40223b15578379f7a947fe27c5"
     },
     {
+      "path": "deployments/worker8788/source/src/codex_remote_worker/project_activity.py",
+      "sha256": "805989b0a9610d08042503083ada28689144d9e49ad08b77b51e0a1e8dbeb4a1"
+    },
+    {
       "path": "deployments/worker8788/source/src/codex_remote_worker/project_archive.py",
       "sha256": "8d5ea18107f81040e139dae089ba9e55cbc802501af0c2668d18d08eb667d4dd"
     },
@@ -603,7 +606,7 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/project_session.py",
-      "sha256": "4af6422947de300b67616ac6efc4b7679224b71cd2dd6a28abe2d00b4de73d30"
+      "sha256": "54c0d3608af4867250a599f4a1a99fe93e7a91c89ff93eda038160b445088aea"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/qa.py",
@@ -643,11 +646,11 @@
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/translation_task_api.py",
-      "sha256": "be6e9501accf2fd35d99f3086eb0b3740d676932686ad84934fa6564a013996d"
+      "sha256": "e960d081bdeaecef52dcf3aea9980ea9dfe2f74240ca09770a4db5d6e41bd066"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/translation_tasks.py",
-      "sha256": "c1101a9a19a04163ea09745175c5a3e2d785fa76e6da4a91e4f409254f396cae"
+      "sha256": "a48d772b6d61e4a3052cc1d1d5769fd309b954763f4fde372f2372218cd74c0c"
     },
     {
       "path": "deployments/worker8788/source/src/codex_remote_worker/windows.py",
@@ -659,7 +662,7 @@
     },
     {
       "path": "deployments/worker8788/source/tests/conftest.py",
-      "sha256": "4ec36eb8ba107adac520a28f0943d34f07fb3cbb9cac47a176721bf3f4b86446"
+      "sha256": "c4f1dd61fa48608fb30a4d3704bdfbb262211b9b68926e737e371feca13ebbc9"
     },
     {
       "path": "deployments/worker8788/source/tests/test_access_audit.py",
@@ -754,16 +757,20 @@
       "sha256": "89951d46aae712eb090842a09858012d9647d91dd379553a8f3e4c8c7b4870e9"
     },
     {
+      "path": "deployments/worker8788/source/tests/test_project_activity.py",
+      "sha256": "b5af626632223791cf545cce13b858a4496e4b2abea1a10b807daecb3ba04cf3"
+    },
+    {
       "path": "deployments/worker8788/source/tests/test_project_context.py",
       "sha256": "22ed3fb688e6441b20a17f3094b9a8d7242afb116bef042382e46b311f6bd90b"
     },
     {
       "path": "deployments/worker8788/source/tests/test_project_controller.py",
-      "sha256": "c91b1adef8ec78342f08a883164b3ae313dcb1d5afdf92f50cd7a29b65542e4c"
+      "sha256": "9735ffa47b1356bdf4cab958fdbca890256f8f14e964bff4cea6c1d34e4a0a9d"
     },
     {
       "path": "deployments/worker8788/source/tests/test_project_session.py",
-      "sha256": "ae576bd8d24c22f3f0939fd4b4cd9e61717b73190c905e2bd475e95edf390259"
+      "sha256": "97e16fff876022203273f8324daf3055fa7e6061dec8536112f5ffa83202e969"
     },
     {
       "path": "deployments/worker8788/source/tests/test_project_upgrade.py",
@@ -849,5 +856,6 @@
       "path": "tools/verify_worker8788_snapshot.py",
       "sha256": "d9fd05fb998d6bf18ffdb5953da7730b613f7a3141ff515a13d6ac24a3c6ca96"
     }
-  ]
+  ],
+  "base_deployment_commit": "c89493ef7ffec77b18f0f474488b2e1d74d62ff7"
 }

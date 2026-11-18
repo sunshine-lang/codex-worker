@@ -1,5 +1,22 @@
 # 8788 整单持续 Codex 会话
 
+## 查询任务最近完成的动作
+
+翻译流程 MVP-v2 通过以下查询读取 Agent 已经成功完成的操作。任务整体进度仍由 `status` 和 `stage` 表示。
+
+```http
+GET /v1/tasks/{task_id}?include_actions=true
+```
+
+- `session_progress.recent_actions` 最多包含最近 4 条记录，按顺序返回。`seq` 在同一任务内去重，`at` 是完成时间。两次查询之间若发生更多动作，序号可能跳跃。
+- 读取提示词或指南的记录包含实际文件名或资料角色。读取原文、保存及修订译文按句段记录，检查点文件名为 `project-session-state.json`。查询只展示动作摘要与有限数量的句段编号。
+- `actor=agent` 表示项目工具已成功执行。`actor=worker` 的 `create_result` 在整单 `result.json` 写出并登记后返回。纯 TM 订单可以只有这一条记录。未启动会话的排队任务仍可返回 `session_progress=null`。
+- 省略 `include_actions` 时维持原状态响应。升级前的任务仅能返回已经留存的进度和可核实的结果文件记录。较早检查点恢复后，新工具动作会沿用原有工具计数继续编号。
+
+Windows 更新时，等 8788 任务处理完毕，按现有方式停止服务并备份当前源码。将本分支 `deployments/worker8788/source/src/codex_remote_worker/` 中的 `project_activity.py`、`project_session.py`、`app_server_runner.py`、`translation_tasks.py` 和 `translation_task_api.py` 同步到 8788 安装目录的 `src/codex_remote_worker/`，再启动服务。当前整单会话配置下，`GET /v1/tasks/capabilities` 返回 `task_recent_actions: true` 表示新版已加载。
+
+## 整单持续会话基线
+
 2026-11-17，控制协议 `ledger/2`。每份需要模型处理的 `/v1/tasks` 整单使用一个 Worker Job、一个执行通道和一个持续的 Codex thread。Codex 自主选择完整材料的读取范围、分页大小、翻译顺序和保存分组，并可在同一轮完成整单翻译与自检。Worker 保存进度并核验交付条件，不再按固定条数派发模型工作。
 
 本次同步的运行配置为官方 GPT 订阅 `gpt-6.1-sol / medium`、一个执行通道、872,000 tokens 上下文和 784,800 tokens 自动压缩阈值。配置示例不含认证信息，不代表其他安装环境已取得相同模型权限。

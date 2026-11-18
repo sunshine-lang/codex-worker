@@ -19,6 +19,7 @@ from .files import new_stage, prepare_record
 from .json_delivery import check_json_result, load_json
 from .runner import codex_config_digest
 from .tm_policy import select_tm100
+from .project_activity import activity_progress
 
 TASK_CONTRACT = 'translation-task/1'
 TASK_TERMINAL = {'completed', 'failed'}
@@ -180,7 +181,7 @@ class TaskStore:
             return [load_json(r[0]) for r in self.db.execute("SELECT record FROM tasks WHERE status IN ('queued','running') ORDER BY created_at,task_id")]
 
 
-def public_task(task):
+def public_task(task, *, include_actions=False):
     total = task['total_rows']
     finished = task['tm_rows'] + task['translated_rows']
     active = [b['job_id'] for b in task['batches'] if b.get('job_id') and b.get('status') not in ('completed','failed','cancelled','interrupted')]
@@ -193,7 +194,7 @@ def public_task(task):
             'self_review_status': task.get('self_review_status', 'not_started'),
             'conversation_mode': 'one_project_one_thread' if task.get('continuous_project_session') else 'independent_batch_threads',
             'codex_thread_id': task.get('codex_thread_id'),
-            'session_progress': task.get('session_progress'),
+            'session_progress': activity_progress(task) if include_actions else task.get('session_progress'),
             'progress': {'total_segments': total, 'tm_reused_segments': task['tm_rows'],
                          'model_required_segments': total-task['tm_rows'], 'model_translated_segments': task['translated_rows'],
                          'finished_segments': finished, 'percent': round(finished*100/total, 2) if total else 100,
@@ -468,6 +469,8 @@ class TaskManager:
                                   or (job.get('project_resume') or {}).get('thread_id'))
         progress = execution.get('project_session') or {}
         task['session_progress'] = progress
+        if 'recent_project_actions' in execution:
+            task['recent_actions'] = execution['recent_project_actions']
         task['translated_rows'] = progress.get('draft_segments', 0)
         task['stage'] = {'reviewing':'project_self_review','complete':'delivery_check'}.get(progress.get('phase'), 'translating' if job['status']!='queued' else 'waiting_for_worker')
         task['self_review_status'] = 'running' if progress.get('phase')=='reviewing' else 'not_started'

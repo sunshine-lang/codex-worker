@@ -123,7 +123,7 @@ class RangeRpc(ProjectRpc):
         return {'turn':{'id':self.turn_id}}
 
 
-def test_early_model_endings_finish_one_project_in_many_turns(settings,monkeypatch):
+def test_early_model_endings_finish_one_project_in_many_turns(settings,monkeypatch,project_markdown_runtime):
     settings=settings.model_copy(update={'project_context_enabled':True,'continuous_project_session':True})
     settings.doc_converter.write_bytes(b'fixture converter')
     monkeypatch.setattr(TextAppServerRunner,'baseline_ready',lambda _: {'ready':True,'service_version':'fixture','codex_version':'fixture','tools':{}})
@@ -172,7 +172,7 @@ class ResumeRpc(ProjectRpc):
 
 @pytest.mark.parametrize('recovery_mode',['same_thread','resume_environment_unavailable',
     'resume_environment_unavailable_then_stall','resume_other_error'])
-def test_failed_project_resumes_same_thread_and_retains_saved_draft(settings,monkeypatch,recovery_mode):
+def test_failed_project_resumes_same_thread_and_retains_saved_draft(settings,monkeypatch,recovery_mode,project_markdown_runtime):
     settings=settings.model_copy(update={'project_context_enabled':True,'continuous_project_session':True})
     settings.doc_converter.write_bytes(b'fixture converter')
     monkeypatch.setattr(TextAppServerRunner,'baseline_ready',lambda _: {'ready':True,'service_version':'fixture','codex_version':'fixture','tools':{}})

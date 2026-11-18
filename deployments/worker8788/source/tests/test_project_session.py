@@ -194,7 +194,7 @@ class ProjectRpc(Rpc):
 
 
 @pytest.mark.parametrize('mode',['success','bad_review','same_turn'])
-def test_one_job_one_thread_model_selects_turns_and_no_unreviewed_result(settings,monkeypatch,mode):
+def test_one_job_one_thread_model_selects_turns_and_no_unreviewed_result(settings,monkeypatch,mode,project_markdown_runtime):
     settings=settings.model_copy(update={'project_context_enabled':True,'continuous_project_session':True})
     settings.doc_converter.write_bytes(b'fixture converter (not called for Markdown)')
     monkeypatch.setattr(TextAppServerRunner,'baseline_ready',lambda _: {'ready':True,'service_version':'fixture','codex_version':'fixture','tools':{}})

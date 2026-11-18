@@ -11,6 +11,24 @@ from codex_remote_worker.config import Settings
 
 
 @pytest.fixture
+def project_markdown_runtime(monkeypatch):
+    """Use the real Markdown parser for RPC fixtures on hosts without Windows process handles."""
+    if sys.platform == 'win32':
+        return
+    from codex_remote_worker import app_server_text
+    from codex_remote_worker.task_runtime import layout
+    from codex_remote_worker.task_tools import TaskTools
+
+    async def prepare(settings, job, root, touch, stopped, redactor, *, host_prepared=False):
+        assert host_prepared
+        assert all(Path(job['inputs'][role]['filename']).suffix == '.md' for role in ('project_style', 'general_style'))
+        layout(settings, job, root)
+        return TaskTools(root / 'work/.worker/manifest.json').prepare()
+
+    monkeypatch.setattr(app_server_text, 'prepare_task_runtime', prepare)
+
+
+@pytest.fixture
 def settings(tmp_path):
     home = tmp_path / 'codex-home'
     home.mkdir()

@@ -12,6 +12,7 @@ import sqlite3
 
 from .common import JobError, canonical, digest, file_digest, now, write_json
 from .json_delivery import check_json_result, load_json
+from .project_activity import ACTION_WINDOW, completed_action
 from .project_context import normalized, terms
 from .qa import check_row
 
@@ -169,6 +170,11 @@ class ProjectSession:
                     for k in map(str, range(len(self.records)))),
                 'total_segments': len(self.records), 'model_required_segments': len(self.pending),
                 'revisions': self.revisions, 'tool_calls': len(self.calls)}
+
+    def recent_actions(self):
+        # Older checkpoints contain tool counts but no public action descriptions.
+        return [c['activity'] for c in self.calls[-ACTION_WINDOW:]
+                if isinstance(c, dict) and isinstance(c.get('activity'), dict)]
 
     def _persist(self):
         write_json(self.root/'control/project-session-state.json', {
@@ -351,8 +357,11 @@ class ProjectSession:
         handlers = {'project_read':self._read,'project_write':self._write,'project_review':self._review}
         if name not in handlers:
             raise JobError('UNEXPECTED_TOOL_ACTIVITY', '只允许操作当前整单项目。')
+        revisions_before = self.revisions
         result = handlers[name](args)
-        self.calls.append({'tool':name, 'phase':self.phase, 'at':now(),
+        at = now()
+        activity = completed_action(self, name, args, result, at, revisions_before)
+        self.calls.append({'tool':name, 'phase':self.phase, 'at':at, 'activity':activity,
             **{k:args[k] for k in ('operation','start','count','char_offset','char_limit','query','row_ids') if k in args},
             'written_row_ids':[r['row_id'] for r in args.get('rows',[])]})
         self._persist()

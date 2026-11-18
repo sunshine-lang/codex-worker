@@ -232,7 +232,8 @@ class AppServerRunner(CodexRunner):
                 'model_output_schema_requested': False, 'exit_code_semantics': 'turn_status_not_daemon_exit'}
             session = getattr(self, 'project_session', None)
             if session is not None:
-                execution.update(project_session=session.progress(), conversation_mode='one_project_one_thread')
+                execution.update(project_session=session.progress(), recent_project_actions=session.recent_actions(),
+                                 conversation_mode='one_project_one_thread')
             touch(execution=execution)
             thread_id = turn_id = None
             terminal = False
@@ -354,6 +355,7 @@ class AppServerRunner(CodexRunner):
                             session = getattr(self, 'project_session', None)
                             if session is not None:
                                 execution['project_session'] = session.progress()
+                                execution['recent_project_actions'] = session.recent_actions()
                                 execution.setdefault('conversation_mode', 'one_project_one_thread')
                             else:
                                 execution['project_context_queries'] = len(self.project_context.calls)

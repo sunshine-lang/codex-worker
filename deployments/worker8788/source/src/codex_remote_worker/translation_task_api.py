@@ -38,7 +38,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
     async def capabilities():
         return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
-                'semantic_review': False, 'max_segments': 10000,
+                'semantic_review': False, 'max_segments': 10000, 'task_recent_actions': settings.continuous_project_session,
                 'codex_self_review': settings.continuous_project_session,
                 'conversation_mode': 'one_project_one_thread' if settings.continuous_project_session else 'independent_batch_threads',
                 'result_publication': 'after_project_self_review' if settings.continuous_project_session else 'per_batch',
@@ -88,8 +88,8 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
         return task_id
 
     @router.get('/{task_id}')
-    async def status(task_id: str):
-        return public_task(app.state.translation_tasks.store.get(identifier(task_id)))
+    async def status(task_id: str, include_actions: bool = False):
+        return public_task(app.state.translation_tasks.store.get(identifier(task_id)), include_actions=include_actions)
 
     @router.get('/{task_id}/result')
     async def result(task_id: str):
