@@ -7,13 +7,19 @@ import uuid
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
+from typing import Literal
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from .common import JobError, ROLES
 from .config import Options
+from .contextual_tm import CONTEXTUAL_TM
 from .files import ensure_space, receive_files
 from .translation_tasks import BatchPolicy, TaskManager, TASK_CONTRACT, public_task
+
+
+class TranslationTaskOptions(Options):
+    tm_policy: Literal['contextual-v2'] | None = None
 
 
 def install_translation_tasks(app, settings, authorized, *, policy=None):
@@ -37,6 +43,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
     @router.get('/capabilities')
     async def capabilities():
         return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
+                'tm_policies': [CONTEXTUAL_TM] if settings.continuous_project_session else [],
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
                 'semantic_review': False, 'max_segments': 10000, 'task_recent_actions': settings.continuous_project_session,
                 'codex_self_review': settings.continuous_project_session,
@@ -66,16 +73,18 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
                 if any(not isinstance(form[role], UploadFile) for role in ROLES) or not isinstance(form['options'], str):
                     raise JobError('INVALID_INPUT', '上传字段类型不正确。')
                 try:
-                    options = Options.model_validate_json(form['options'])
+                    task_options = TranslationTaskOptions.model_validate_json(form['options'])
+                    options = Options(timeout_seconds=task_options.timeout_seconds)
                 except ValidationError:
-                    raise JobError('INVALID_OPTIONS', '仅接受 timeout_seconds；分批参数由 Worker 配置。') from None
+                    raise JobError('INVALID_OPTIONS', '整单参数只接受 timeout_seconds 和可选的 tm_policy。') from None
                 ensure_space(settings)
                 manifest = await receive_files(settings, {role: form[role] for role in ROLES}, stage)
                 if manager.store.by_key(key) is None:
                     ready = await app.state.worker.ready()
                     if not ready.get('ready'):
                         raise JobError('NOT_READY', ready.get('message', 'Worker 尚未就绪。'), 503)
-                task, reused = await asyncio.to_thread(manager.accept, task_id, stage, manifest, options, key)
+                task, reused = await asyncio.to_thread(manager.accept, task_id, stage, manifest, options, key,
+                                                     tm_policy=task_options.tm_policy)
                 manager.wakeup.set()
                 return JSONResponse({**public_task(task), 'reused_submission': reused}, status_code=200 if reused else 202)
         finally:

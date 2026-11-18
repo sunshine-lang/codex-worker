@@ -1,5 +1,16 @@
 # 8788 整单持续 Codex 会话
 
+## 按语境使用 100% TM
+
+新分支 `codex/8788-contextual-tm-v2` 包含动作查询版本。等 8788 空闲后，按原有方式停服务、备份当前源码，将本分支 `deployments/worker8788/source/src/codex_remote_worker/` 同步到 8788 安装目录的 `src/codex_remote_worker/`，再启动服务。相对于动作查询分支，此次更新涉及 `contextual_tm.py`、`translation_tasks.py`、`translation_task_api.py`、`json_delivery.py`、`project_session.py` 和 `app_server_text.py`。运行中的服务通过 `GET /v1/tasks/capabilities` 声明 `tm_policies` 包含 `contextual-v2`。
+
+v2 提交端在现有 multipart `options` 中指定 `{"timeout_seconds":7200,"tm_policy":"contextual-v2"}`。策略绑定到订单及幂等键，状态回执返回 `tm_policy`。未指定策略的调用沿用原契约；既有订单按提交时的策略恢复。
+
+- 程序直用要求有生效 100% 候选、全部候选译文一致、所选原文精确相同、当前和历史上下文相同且具备具体内容、语言对一致，并通过术语、标识、占位符、数值和程序风格检查。缺少使用场景或出现冲突的句段进入同一翻译 Agent。相同分数的参考按稳定编号排序。
+- Agent 读取相邻原文、上下文、候选和两份指南，通过原有 `project_write` 保存选择。`reuse` 指定候选编号，由宿主逐字复制；`adapt` 指定候选并提交调整后的完整译文；`retranslate` 用空候选编号提交新译文。自检时可回改，最后使用当前草稿所绑定的选择。
+- 原始结果 JSON 只回填各段 `target_text`。完成时的批次清单另附 `tm_decisions`，按从 0 开始的原行号索引，记录 `segment_id`、`actor`、`action`、稳定候选编号、上游编号和 `enabled_tm_index`（原句启用候选列表中的从 0 开始的位置；重新翻译时为空）。`tm_decisions_sha256` 绑定该清单。
+- 进度 `tm_reused_segments` 仅统计程序直用。`tm_summary` 分别统计直用、Agent 原样沿用、调整、重译，后三类只统计含生效 100% 候选的句段。Agent 确认复用仍属于已送模型的句段。该策略用于现有整单翻译会话，沿用现有 Worker 自检。
+
 ## 查询任务最近完成的动作
 
 翻译流程 MVP-v2 通过以下查询读取 Agent 已经成功完成的操作。任务整体进度仍由 `status` 和 `stage` 表示。

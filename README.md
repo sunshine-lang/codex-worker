@@ -1,6 +1,6 @@
 # Codex Remote Worker
 
-本分支在 8788 的整单会话版本上增加了已完成动作查询。Windows 更新步骤和接口说明见 [8788 任务状态](deployments/worker8788/README.md#查询任务最近完成的动作)。
+本分支增加了 v2 订单的按语境复用 TM 策略，并包含已完成动作查询。部署与接口见 [按语境使用 100% TM](deployments/worker8788/README.md#按语境使用-100-tm)。任务状态字段见 [已完成动作查询](deployments/worker8788/README.md#查询任务最近完成的动作)。
 
 **本分支最新同步：2026-11-17 的 8788 整单自主翻译版本。** 当前部署代码位于
 [deployments/worker8788/source](deployments/worker8788/source)，桌面程序位于

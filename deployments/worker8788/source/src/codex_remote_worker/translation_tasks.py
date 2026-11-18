@@ -20,6 +20,8 @@ from .json_delivery import check_json_result, load_json
 from .runner import codex_config_digest
 from .tm_policy import select_tm100
 from .project_activity import activity_progress
+from .contextual_tm import CONTEXTUAL_TM, contextual_auto, contextual_candidates, tm_receipt, verify_tm_report
+from .qa import check_row
 
 TASK_CONTRACT = 'translation-task/1'
 TASK_TERMINAL = {'completed', 'failed'}
@@ -35,7 +37,7 @@ class BatchPolicy:
             raise ValueError('Invalid server batch policy')
 
 
-def plan_request(original, policy):
+def plan_request(original, policy, *, tm_policy=None):
     project = isinstance(original, dict) and 'source_text' not in original and ('segments' in original or 'project_name' in original)
     if project:
         project_name, rows = original.get('project_name'), original.get('segments')
@@ -71,16 +73,26 @@ def plan_request(original, policy):
             ):
                 raise JobError('INVALID_TASK_INPUT', field + ' 必须是有效的双语参考数组。')
         try:
-            selection = select_tm100(row)
+            if tm_policy == CONTEXTUAL_TM:
+                row['tm_list'] = contextual_candidates(row)
+                selection = contextual_auto(row)
+                if selection:
+                    terms = [{'source': t.get('source_surface') or t['source_text'], 'target': t['target_text']}
+                             for t in row['tb_list'] if t.get('enabled') is not False]
+                    if check_row({'source': row['source_text'], 'terms': terms, 'id': str(index),
+                                  'excel_row': index + 1}, selection['target_text']):
+                        selection = None
+            else:
+                selection = select_tm100(row)
         except ValueError as exc:
             raise JobError('INVALID_TM_RATE', 'TM match_rate 必须是 0～100 数值或 null。') from exc
         row['target_text'] = ''
         normalized.append(row)
         if selection:
             locked[str(index)] = selection
-            if selection['multiple_targets']:
+            if selection.get('multiple_targets'):
                 notes.append({'row_id': str(index), 'code': 'MULTIPLE_TM_100'})
-            if not selection['source_exact']:
+            if selection.get('source_exact') is False:
                 notes.append({'row_id': str(index), 'code': 'TM_SOURCE_DIFFERENCE'})
         else:
             pending.append(index)
@@ -96,12 +108,13 @@ def plan_request(original, policy):
             notes.append({'row_id': str(index), 'code': 'OVERSIZE_SEGMENT', 'message': '单条独立成批；字符预算不是模型 token 容量保证。'})
     if current:
         batches.append(current)
-    return {'original': original, 'records': normalized, 'project': project, 'project_name': project_name,
+    return {**({'tm_policy': tm_policy} if tm_policy else {}), 'original': original, 'records': normalized, 'project': project, 'project_name': project_name,
             'locked': locked, 'pending': pending, 'batches': batches, 'notes': notes}
 
 
 def batch_packet(plan, indices, task_id):
-    return {'contract': 'siemens-json/2', 'phase': 'translate', 'project_name': plan['project_name'], 'request_id': task_id,
+    return {**({'tm_policy': plan['tm_policy']} if plan.get('tm_policy') else {}),
+            'contract': 'siemens-json/2', 'phase': 'translate', 'project_name': plan['project_name'], 'request_id': task_id,
             'rows': [{'row_id': str(i), 'record': plan['records'][i], 'memory': {'terms': [], 'examples': []},
                       'source_units': [{'id': 1, 'source': plan['records'][i]['source_text']}], 'term_decisions': []} for i in indices],
             'tm_reuse': []}
@@ -188,7 +201,8 @@ def public_task(task, *, include_actions=False):
     active = list(dict.fromkeys(active))
     if task['status'] in TASK_TERMINAL:
         active = []
-    return {'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
+    tm_fields = {k: task[k] for k in ('tm_policy', 'tm_summary', 'tm_decisions_sha256') if k in task}
+    return {**tm_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
             'review_status': 'not_started', 'result_kind': 'translation_candidate',
             'self_review_status': task.get('self_review_status', 'not_started'),
@@ -237,7 +251,7 @@ class TaskManager:
         (stage/'results').mkdir()
         return task_id, stage
 
-    def accept(self, task_id, stage, manifest, options, key):
+    def accept(self, task_id, stage, manifest, options, key, *, tm_policy=None):
         source = contained_file(stage.resolve(), stage/'input'/manifest['source_file']['filename'])
         if source.suffix.lower() != '.json':
             raise JobError('INVALID_TASK_INPUT', '整单任务的 source_file 必须是 JSON。')
@@ -245,11 +259,14 @@ class TaskManager:
             original = load_json(source.read_text(encoding='utf-8-sig'))
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise JobError('INVALID_TASK_INPUT', '输入不是有效 UTF-8 JSON。') from exc
-        plan = plan_request(original, self.policy)
+        if tm_policy is not None and (tm_policy != CONTEXTUAL_TM or not self.settings.continuous_project_session):
+            raise JobError('TM_POLICY_UNAVAILABLE', '按语境处理 TM 需要支持该策略的整单会话 Worker。')
+        plan = plan_request(original, self.policy, tm_policy=tm_policy)
+        policy_fields = {'tm_policy': tm_policy} if tm_policy else {}
         write_json(stage/'plan.json', plan)
         created = now()
-        record = {'task_id': task_id, 'request_key': key,
-                  'fingerprint': digest(canonical({'files': manifest, 'options': options.model_dump()})),
+        record = {**policy_fields, 'task_id': task_id, 'request_key': key,
+                  'fingerprint': digest(canonical({'files': manifest, 'options': options.model_dump(), **policy_fields})),
                   'status': 'queued', 'stage': 'queued', 'created_at': created, 'updated_at': created,
                   'project_name': plan['project_name'], 'inputs': manifest, 'options': options.model_dump(),
                   'batch_policy': asdict(self.policy), 'codex_config_sha256': codex_config_digest(self.settings),
@@ -351,6 +368,10 @@ class TaskManager:
     def _finish(self, task):
         plan = self._plan(task)
         values = {key: item['target_text'] for key, item in plan['locked'].items()}
+        contextual = plan.get('tm_policy') == CONTEXTUAL_TM
+        decisions = {key: {'segment_id': plan['records'][int(key)].get('segment_id'), 'actor': 'rule',
+                           'action': 'reuse', 'candidate_id': ref['candidate_id']}
+                     for key, ref in plan['locked'].items()} if contextual else {}
         root = self.root/task['task_id']
         for index, batch in enumerate(task['batches']):
             path = contained_file(root.resolve(), root/'results'/f'batch_{index:05d}.json')
@@ -359,12 +380,24 @@ class TaskManager:
             reply = load_json(path.read_text(encoding='utf-8'))
             check_json_result(batch_packet(plan, batch['indices'], task['task_id']), reply)
             values.update({row['row_id']: row['target_text'] for row in reply['rows']})
+            if contextual:
+                for item in reply['rows']:
+                    key = item['row_id']
+                    record = plan['records'][int(key)]
+                    if any(r.get('match_rate') == 100 for r in record['tm_list']):
+                        decisions[key] = {'segment_id': record.get('segment_id'), 'actor': 'agent', **item['tm_decision']}
         if set(values) != {str(i) for i in range(task['total_rows'])}:
             raise JobError('INCOMPLETE_RESULT', '整单译文缺失或重复。')
         result = copy.deepcopy(plan['original'])
         rows = result['segments'] if plan['project'] else result if isinstance(result, list) else [result]
         for index, row in enumerate(rows):
             row['target_text'] = values[str(index)]
+        if contextual:
+            decisions = {k: tm_receipt(rows[int(k)], v['actor'], v['action'], v['candidate_id']) for k, v in decisions.items()}
+            task['tm_summary'] = verify_tm_report(rows, [values[str(i)] for i in range(len(rows))],
+                                                   decisions, plan['locked'])
+            write_json(root/'tm-decisions.json', decisions)
+            task['tm_decisions_sha256'] = digest(canonical(decisions))
         write_json(root/'result.json', result)
         task.update(status='completed', stage='translation_complete', result_sha256=file_digest(root/'result.json'), completed_at=now())
         task['result_content_sha256'] = digest(canonical(result))
@@ -577,7 +610,15 @@ class TaskManager:
                 'job_id':batch.get('job_id'), 'available':available,
                 'sha256':batch.get('result_sha256') if available else None,
                 'result_path':f'/v1/tasks/{task_id}/batches/{index}' if available else None})
-        return {'contract':'translation-task-batches/1', 'task_id':task_id,
+        tm_fields = {}
+        if task.get('tm_policy') == CONTEXTUAL_TM:
+            tm_fields['tm_policy'] = CONTEXTUAL_TM
+            if task['status'] == 'completed':
+                decisions = load_json((self.root/task_id/'tm-decisions.json').read_text(encoding='utf-8'))
+                if digest(canonical(decisions)) != task['tm_decisions_sha256']:
+                    raise JobError('ARTIFACT_CHANGED', 'TM 决策记录校验失败。')
+                tm_fields['tm_decisions'] = decisions
+        return {**tm_fields, 'contract':'translation-task-batches/1', 'task_id':task_id,
                 'source_sha256':task['inputs']['source_file']['sha256'], 'task':public_task(task),
                 'result_content_sha256':task.get('result_content_sha256'), 'total_segments':task['total_rows'],
                 'tm_reused_row_ids':[str(i) for i in range(task['total_rows']) if i not in model_rows],

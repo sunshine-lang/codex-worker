@@ -4,6 +4,7 @@ import math
 import re
 
 from .common import JobError
+from .contextual_tm import CONTEXTUAL_TM, contextual_candidates, resolve_tm_choice
 from .tm_policy import PROJECT_CONTRACT, select_tm100
 
 CONTRACT = 'siemens-json/1'
@@ -54,6 +55,9 @@ def read_json_source(path):
             raise ValueError('invalid packet')
         project = packet.get('contract') == PROJECT_CONTRACT
         keys = {'contract', 'phase', 'rows', 'project_name', 'request_id', 'tm_reuse'} if project else {'contract', 'phase', 'rows'}
+        contextual = project and packet.get('tm_policy') == CONTEXTUAL_TM and packet.get('phase') == 'translate'
+        if contextual:
+            keys.add('tm_policy')
         if (set(packet) != keys or packet['contract'] not in JSON_CONTRACTS
                 or packet['phase'] not in {'translate', 'review'} or not isinstance(packet['rows'], list)):
             raise ValueError('invalid packet')
@@ -83,8 +87,13 @@ def read_json_source(path):
             if packet['phase'] == 'review' and not text(record.get('target_text')):
                 raise ValueError('missing candidate')
         if project:
+            if contextual and reused:
+                raise ValueError('contextual work packets contain only Agent rows')
             for row in packet['rows']:
-                if select_tm100(row['record']) is not None:
+                if contextual:
+                    if contextual_candidates(row['record']) != row['record']['tm_list']:
+                        raise ValueError('invalid contextual reference identities or ordering')
+                elif select_tm100(row['record']) is not None:
                     raise ValueError('100% TM must not enter model rows')
             for row in reused:
                 selected = select_tm100(row['record'])
@@ -116,7 +125,11 @@ def check_json_result(packet, result):
         issues = []
         for row in rows:
             if packet['phase'] == 'translate':
-                if set(row) != {'row_id', 'target_text', 'term_decisions'} or not text(row['target_text']):
+                keys = {'row_id', 'target_text', 'term_decisions'}
+                if packet.get('tm_policy') == CONTEXTUAL_TM:
+                    keys.add('tm_decision')
+                    resolve_tm_choice(expected[row['row_id']]['record'], row['target_text'], row.get('tm_decision'))
+                if set(row) != keys or not text(row['target_text']):
                     raise ValueError('invalid translation')
                 terms = row['term_decisions']
                 if not isinstance(terms, list) or any(

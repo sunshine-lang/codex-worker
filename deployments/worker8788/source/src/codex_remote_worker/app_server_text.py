@@ -17,7 +17,9 @@ from .subscription import effective_config, require_chatgpt_login, require_confi
 from .task_runtime import prepare_task_runtime
 from .task_tools import TaskTools, JSON_CONTRACTS
 from .project_context import ProjectContext, TOOL_SPEC, TOOL_NAME, PROJECT_INSTRUCTIONS
-from .project_session import ProjectSession, TOOLS as SESSION_TOOLS, TOOL_NAMES as SESSION_TOOL_NAMES, INSTRUCTIONS as SESSION_INSTRUCTIONS
+from .project_session import (ProjectSession, TOOLS as SESSION_TOOLS, TOOL_NAMES as SESSION_TOOL_NAMES,
+                              INSTRUCTIONS as SESSION_INSTRUCTIONS, LEGACY_TM_INSTRUCTIONS,
+                              CONTEXTUAL_INSTRUCTIONS, contextual_write_tools)
 from .project_controller import ProjectController
 
 
@@ -53,7 +55,7 @@ def output_schema(snapshot):
     return object_schema({'rows': array(object_schema(properties))})
 
 
-def text_thread_parameters(settings, root, *, project_context=False, project_session=False):
+def text_thread_parameters(settings, root, *, project_context=False, project_session=False, contextual_tm=False):
     params = thread_parameters(settings, root)
     params.update(environments=[], runtimeWorkspaceRoots=[], dynamicTools=[], selectedCapabilityRoots=[])
     instructions = INSTRUCTIONS
@@ -64,6 +66,9 @@ def text_thread_parameters(settings, root, *, project_context=False, project_ses
     if project_session:
         instructions = SESSION_INSTRUCTIONS
         params['dynamicTools'] = SESSION_TOOLS
+        if contextual_tm:
+            instructions = instructions.replace(LEGACY_TM_INSTRUCTIONS, CONTEXTUAL_INSTRUCTIONS)
+            params['dynamicTools'] = contextual_write_tools()
     params['developerInstructions'] = instructions
     params['config'].update({'developer_instructions': instructions, 'features.shell_tool': False,
         'features.plugins': False, 'features.apps': False, 'features.multi_agent': False,
@@ -239,7 +244,8 @@ class TextAppServerRunner(AppServerRunner):
 
     def thread_parameters(self, root):
         return text_thread_parameters(self.settings, root, project_context=self.project_context is not None,
-                                      project_session=self.project_session is not None)
+                                      project_session=self.project_session is not None,
+                                      contextual_tm=bool(self.project_session and self.project_session.contextual_tm))
 
     def turn_parameters(self, thread_id, prompt, root):
         if self.project_session is not None:

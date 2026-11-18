@@ -11,6 +11,7 @@ import re
 import sqlite3
 
 from .common import JobError, canonical, digest, file_digest, now, write_json
+from .contextual_tm import CONTEXTUAL_TM, resolve_tm_choice
 from .json_delivery import check_json_result, load_json
 from .project_activity import ACTION_WINDOW, completed_action
 from .project_context import normalized, terms
@@ -24,6 +25,7 @@ def obj(properties):
 STRING = {'type': 'string'}
 TRANSLATION = obj({'row_id': STRING, 'target_text': STRING,
     'term_decisions': {'type': 'array', 'items': obj({'source_text': STRING, 'target_text': STRING})}})
+TM_DECISION = obj({'action': {'type': 'string', 'enum': ['reuse', 'adapt', 'retranslate']}, 'candidate_id': STRING})
 TOOLS = [
     {'type': 'function', 'name': 'project_read', 'description':
      'Read this entire project: overview shows progress and saved notes; guides retrieves the original prompt '
@@ -53,6 +55,27 @@ TOOLS = [
 ]
 TOOL_NAMES = {t['name'] for t in TOOLS}
 
+
+def contextual_write_tools():
+    tools = copy.deepcopy(TOOLS)
+    write = next(t for t in tools if t['name'] == 'project_write')
+    write['description'] = write['description'].replace('100% TM is locked.',
+        'Only rows with locked_tm=true are locked. Give a tm_decision for each saved row.')
+    write['inputSchema']['properties']['rows']['items'] = obj({**TRANSLATION['properties'], 'tm_decision': TM_DECISION})
+    return tools
+
+
+CONTEXTUAL_INSTRUCTIONS = '''Only rows marked locked_tm=true have been approved for direct reuse.
+For each editable row compare ALL enabled 100% TM candidates against the current source, its role and neighboring
+segments, the language pair, approved terms, protected content and both guides. Candidate order conveys no preference.
+Resolve repeated text consistently when its meaning and role match. Record your choice in each project_write row.
+Use tm_decision.action=reuse with the selected candidate_id and target_text="" to copy that exact candidate.
+Use adapt with its candidate_id and your corrected target_text when a reference partly applies.
+Use retranslate with candidate_id="" and your translation when no 100% candidate applies or exists.
+Never transfer a conflicting device, value or placeholder. Reassess the decision if later context changes it.'''
+
+LEGACY_TM_INSTRUCTIONS = '100% TM rows retain the existing upstream locked-TM contract: inspect them as context and flag problems in\nnotes, but do not rewrite them. Other TM and submitted target_text are references, not approved translations.'
+
 INSTRUCTIONS = '''You are responsible for one COMPLETE translation project in this continuing Codex conversation.
 Reproduce the workflow of receiving a translation request, a translation prompt, project style and general
 rules, reading the source and reference materials, translating coherently, checking and correcting your work,
@@ -72,8 +95,7 @@ a fresh conversation. Use existing translations and project notes throughout. If
 earlier interpretation, revise the earlier row. For repeated ordinary sentences as well as terminology, use
 consistent translations when the meaning matches and different translations when context requires it.
 Do not invent context, follow bad TM blindly, or translate ambiguous text with unjustified certainty.
-100% TM rows retain the existing upstream locked-TM contract: inspect them as context and flag problems in
-notes, but do not rewrite them. Other TM and submitted target_text are references, not approved translations.
+''' + LEGACY_TM_INSTRUCTIONS + '''
 Use project_read checks to examine rule warnings and repeated-source differences; judge these in context.
 Save useful project decisions in notes so they survive conversation compaction. Use project_read guides
 to retrieve the complete original prompt/project_style/general_style whenever needed, especially after
@@ -111,6 +133,7 @@ class ProjectSession:
         if file_digest(directory/'plan.json') != self.task['plan_sha256']:
             raise JobError('INPUT_CHANGED', '整单原始资料校验失败。')
         self.plan = load_json((directory/'plan.json').read_text(encoding='utf-8'))
+        self.contextual_tm = self.plan.get('tm_policy') == CONTEXTUAL_TM
         self.records = self.plan['records']
         self.pending = [str(i) for i in self.plan['pending']]
         self.allowed = set(self.pending)
@@ -140,8 +163,7 @@ class ProjectSession:
                     or any(k != v.get('row_id') for k, v in values.items())
                     or (state['phase'] != 'translating' and set(values) != self.allowed)):
                 raise ValueError('Checkpoint rows or versions are invalid.')
-            check_json_result({'phase':'translate','rows':[{'row_id':k} for k in values]},
-                              {'rows':list(values.values())})
+            check_json_result(self.write_packet(values), {'rows':list(values.values())})
             if (not isinstance(approved, dict)
                     or any(k not in versions and k not in self.plan['locked'] for k in approved)
                     or any(type(v) is not int or v != (0 if k in self.plan['locked'] else versions[k])
@@ -175,6 +197,10 @@ class ProjectSession:
         # Older checkpoints contain tool counts but no public action descriptions.
         return [c['activity'] for c in self.calls[-ACTION_WINDOW:]
                 if isinstance(c, dict) and isinstance(c.get('activity'), dict)]
+
+    def write_packet(self, ids):
+        return {'phase': 'translate', 'tm_policy': self.plan.get('tm_policy'),
+                'rows': [{'row_id': k, 'record': self.records[int(k)]} for k in ids]}
 
     def _persist(self):
         write_json(self.root/'control/project-session-state.json', {
@@ -312,12 +338,15 @@ class ProjectSession:
             raise ValueError('Unknown, duplicate or locked row ID; no rows were saved.')
         if not set(ids) <= self.source_seen:
             raise ValueError('Read the complete original source pages before translating these rows.')
-        packet = {'phase':'translate','rows':[{'row_id':k} for k in ids]}
-        check_json_result(packet, {'rows':args['rows']})
-        proposal = {**self.values, **{r['row_id']:r for r in args['rows']}}
+        rows = args['rows']
+        if self.contextual_tm:
+            rows = [{**r, 'target_text': resolve_tm_choice(self.records[int(r['row_id'])], r.get('target_text'),
+                     r.get('tm_decision'), fill_reuse=True)} for r in rows]
+        check_json_result(self.write_packet(ids), {'rows': rows})
+        proposal = {**self.values, **{r['row_id']:r for r in rows}}
         if len(canonical({'rows':list(proposal.values())})) > self.settings.max_output_bytes:
             raise ValueError('Project output exceeds configured size limit.')
-        for row in args['rows']:
+        for row in rows:
             k = row['row_id']
             if self.values.get(k) != row:
                 self.revisions += k in self.values
