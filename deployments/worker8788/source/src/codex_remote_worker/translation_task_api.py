@@ -14,6 +14,7 @@ from starlette.datastructures import UploadFile
 from .common import JobError, ROLES
 from .config import Options
 from .contextual_tm import CONTEXTUAL_TM
+from .review_issues import FILENAME as REVIEW_ISSUES_FILENAME
 from .segment_languages import PER_SEGMENT
 from .files import ensure_space, receive_files
 from .translation_tasks import BatchPolicy, TaskManager, TASK_CONTRACT, public_task
@@ -50,6 +51,7 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
                 'semantic_review': False, 'max_segments': 10000, 'task_recent_actions': settings.continuous_project_session,
                 'codex_self_review': settings.continuous_project_session,
+                'review_issues_download': settings.continuous_project_session,
                 'conversation_mode': 'one_project_one_thread' if settings.continuous_project_session else 'independent_batch_threads',
                 'result_publication': 'after_project_self_review' if settings.continuous_project_session else 'per_batch',
                 'execution_slot_unit': 'whole_project' if settings.continuous_project_session else 'batch',
@@ -107,6 +109,12 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
     async def result(task_id: str):
         path = await asyncio.to_thread(app.state.translation_tasks.result_path, identifier(task_id))
         return FileResponse(path, filename=task_id+'.json', media_type='application/json', headers={'Cache-Control': 'no-store'})
+
+    @router.get('/{task_id}/review-issues')
+    async def review_issues(task_id: str):
+        path = await asyncio.to_thread(app.state.translation_tasks.review_issues_path, identifier(task_id))
+        return FileResponse(path, filename=REVIEW_ISSUES_FILENAME, media_type='application/json',
+                            headers={'Cache-Control': 'no-store'})
 
     @router.get('/{task_id}/batches')
     async def batch_manifest(task_id: str):

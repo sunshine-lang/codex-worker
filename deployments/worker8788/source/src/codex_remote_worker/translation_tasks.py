@@ -13,7 +13,7 @@ import threading
 import traceback
 import uuid
 
-from .common import JobError, canonical, contained_file, digest, file_digest, now, write_json, accept_directory
+from .common import JobError, Redactor, canonical, contained_file, digest, file_digest, now, write_json, accept_directory
 from .config import Options
 from .files import new_stage, prepare_record
 from .json_delivery import check_json_result, load_json
@@ -22,6 +22,7 @@ from .tm_policy import select_tm100
 from .project_activity import activity_progress
 from .contextual_tm import CONTEXTUAL_TM, contextual_auto, contextual_candidates, tm_receipt, verify_tm_report
 from .qa import check_row
+from .review_issues import FILENAME as REVIEW_ISSUES_FILENAME, build_review_report, group_semantic_issues
 from .segment_languages import PER_SEGMENT, LANGUAGE_INSTRUCTIONS, require_segment_languages
 
 TASK_CONTRACT = 'translation-task/1'
@@ -211,9 +212,11 @@ def public_task(task, *, include_actions=False):
     if task['status'] in TASK_TERMINAL:
         active = []
     tm_fields = {k: task[k] for k in ('language_mode', 'tm_policy', 'tm_summary', 'tm_decisions_sha256') if k in task}
-    return {**tm_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
+    review_fields = {'review_issues_path': f"/v1/tasks/{task['task_id']}/review-issues"} if (
+        task['status'] == 'completed' and task.get('review_issues_sha256')) else {}
+    return {**tm_fields, **review_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
-            'review_status': 'not_started', 'result_kind': 'translation_candidate',
+            'review_status': task.get('review_report_status', 'not_started'), 'result_kind': 'translation_candidate',
             'self_review_status': task.get('self_review_status', 'not_started'),
             'conversation_mode': 'one_project_one_thread' if task.get('continuous_project_session') else 'independent_batch_threads',
             'codex_thread_id': task.get('codex_thread_id'),
@@ -374,7 +377,7 @@ class TaskManager:
         task['stage'] = 'between_batches'
         self.store.save(task)
 
-    def _finish(self, task):
+    def _finish(self, task, *, semantic_issues=None):
         plan = self._plan(task)
         values = {key: item['target_text'] for key, item in plan['locked'].items()}
         contextual = plan.get('tm_policy') == CONTEXTUAL_TM
@@ -408,6 +411,12 @@ class TaskManager:
             write_json(root/'tm-decisions.json', decisions)
             task['tm_decisions_sha256'] = digest(canonical(decisions))
         write_json(root/'result.json', result)
+        if semantic_issues is not None:
+            redact = Redactor(self.settings.secret_values(), [self.settings.data_root, self.settings.codex_home]).text
+            report = build_review_report(plan, values, semantic_issues, redact)
+            path = root/REVIEW_ISSUES_FILENAME
+            write_json(path, report)
+            task.update(review_report_status=report['review_status'], review_issues_sha256=file_digest(path))
         task.update(status='completed', stage='translation_complete', result_sha256=file_digest(root/'result.json'), completed_at=now())
         task['result_content_sha256'] = digest(canonical(result))
         self.store.save(task)
@@ -487,7 +496,7 @@ class TaskManager:
     async def _advance_session(self, task):
         if not task['batches']:
             task['self_review_status'] = 'not_required_all_tm'
-            await asyncio.to_thread(self._finish, task)
+            await asyncio.to_thread(self._finish, task, semantic_issues={})
             return
         task.update(status='running', batch_concurrency=1)
         job_id = task.get('session_job_id')
@@ -554,6 +563,16 @@ class TaskManager:
         reply = load_json(path.read_text(encoding='utf-8-sig'))
         plan = self._plan(task)
         check_json_result(batch_packet(plan, plan['pending'], task['task_id']), reply)
+        semantic_issues = None
+        review_path = root/'control/project-self-review.json'
+        if review_path.is_file():
+            review = load_json(contained_file(root.resolve(), review_path).read_text(encoding='utf-8'))
+            if 'semantic_findings' in review:
+                if (review.get('task_id') != task['task_id'] or review.get('job_id') != job['job_id']
+                        or review.get('status') != 'completed' or review.get('result_digest') != digest(canonical(reply))):
+                    raise JobError('ARTIFACT_CHANGED', '自审记录与最终译文不匹配。')
+                semantic_issues = group_semantic_issues(review['semantic_findings'],
+                                                        {str(i) for i in range(task['total_rows'])})
         values = {r['row_id']:r for r in reply['rows']}
         # Publish immutable delivery partitions only after the entire project is reviewed.
         for index,batch in enumerate(task['batches']):
@@ -561,7 +580,7 @@ class TaskManager:
             write_json(path, {'rows':[values[str(i)] for i in batch['indices']]})
             batch.update(status='completed', result_sha256=file_digest(path))
         task.update(translated_rows=len(plan['pending']), cursor=len(task['batches']), self_review_status='completed')
-        self._finish(task)
+        self._finish(task, semantic_issues=semantic_issues)
 
     async def _loop(self):
         while not self.stopping:
@@ -608,6 +627,21 @@ class TaskManager:
         if file_digest(path) != task['result_sha256']:
             raise JobError('ARTIFACT_CHANGED', '整单结果校验失败。', 409)
         return path
+
+    def review_issues_path(self, task_id):
+        task = self.store.get(task_id)
+        if task['status'] != 'completed':
+            raise JobError('TASK_NOT_COMPLETED', '整单翻译尚未完成。', 409)
+        if not task.get('review_issues_sha256'):
+            raise JobError('REVIEW_ISSUES_NOT_AVAILABLE', '此任务没有保存下游审校问题清单。', 404)
+        root = self.root/task_id
+        try:
+            path = contained_file(root.resolve(), root/REVIEW_ISSUES_FILENAME)
+            if file_digest(path) == task['review_issues_sha256']:
+                return path
+        except OSError:
+            pass
+        raise JobError('ARTIFACT_CHANGED', '审校问题清单校验失败。', 409)
 
     def batch_manifest(self, task_id):
         task = self.store.get(task_id)

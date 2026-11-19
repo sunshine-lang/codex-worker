@@ -16,6 +16,7 @@ from .json_delivery import check_json_result, load_json
 from .project_activity import ACTION_WINDOW, completed_action
 from .project_context import normalized, terms
 from .qa import check_row
+from .review_issues import group_semantic_issues
 
 
 def obj(properties):
@@ -49,9 +50,15 @@ TOOLS = [
     {'type': 'function', 'name': 'project_review', 'description':
      'During the final review phase only: acknowledge semantic review of the CURRENT translations for these '
      'rows after reading their full source pages in this phase. Re-read after edits. Check meaning, ordinary '
-     'sentences and distant references, consistency, TB, rules, values and placeholders. Record unresolved '
-     'ambiguities in note; do not claim independent review. Empty row_ids updates the review note only.',
-     'inputSchema': obj({'row_ids': {'type': 'array', 'items': STRING}, 'note': STRING})},
+     'sentences and distant references, consistency, TB, rules, values and placeholders. Report unresolved '
+     'semantic issues in issues for the reviewed row_ids: revise means the current translation still needs a '
+     'change; needs_review means a human must decide. Explain each issue in the target language. Do not '
+     'include issues already fixed or duplicate host rule checks. Pass issues=[] if no semantic issues remain. '
+     'Use note for general remarks only.',
+     'inputSchema': obj({'row_ids': {'type': 'array', 'items': STRING}, 'note': STRING,
+        'issues': {'type': 'array', 'items': obj({'row_id': STRING,
+            'decision': {'type': 'string', 'enum': ['revise', 'needs_review']},
+            'message': {'type': 'string', 'maxLength': 1000}})}})},
 ]
 TOOL_NAMES = {t['name'] for t in TOOLS}
 
@@ -109,7 +116,9 @@ in this same turn. You do not need to end a turn or ask the host for another ass
 Never repeat an unchanged saved row.
 During final review, autonomously cover the entire project. You can correct
 any earlier model row. Read every current source/translation page, call project_review to acknowledge each
-row, and only report review_complete when all current versions have been checked. Do not simply approve
+row. In each batch of approvals, report any outstanding semantic findings using project_review.issues,
+including issues requiring a human decision for locked rows. Use an empty list for rows with no remaining
+findings. Only report review_complete when all current versions have been checked. Do not simply approve
 unread rows. This is self-review by the translating Codex, not independent quality certification.
 Final messages are brief status JSON; actual translations are delivered from your saved project ledger.
 '''
@@ -140,6 +149,7 @@ class ProjectSession:
         self.values, self.versions, self.approved, self.review_seen = {}, {}, {}, {}
         self.source_seen, self.pages = set(), {}
         self.notes, self.review_note, self.phase = '', '', 'translating'
+        self.semantic_findings = {}
         self.calls, self.revisions, self.checks_read = [], 0, False
         self.checks_seen = set()
         self.restored = (self.root/'control/project-session-state.json').is_file()
@@ -169,6 +179,11 @@ class ProjectSession:
                     or any(type(v) is not int or v != (0 if k in self.plan['locked'] else versions[k])
                            for k, v in approved.items())):
                 raise ValueError('Checkpoint review versions are invalid.')
+            if 'semantic_findings' in state:
+                findings = group_semantic_issues(state['semantic_findings'], approved)
+            else:
+                # Old acknowledgements did not collect findings. Review those rows again.
+                approved, findings = {}, {}
             for name in ('notes', 'review_note'):
                 if not isinstance(state[name], str) or len(state[name]) > 20000:
                     raise ValueError('Checkpoint notes are invalid.')
@@ -182,6 +197,7 @@ class ProjectSession:
             raise JobError('INVALID_PROJECT_CHECKPOINT', '整单检查点校验失败，原草稿保持不变。') from exc
         self.values, self.versions, self.approved = copy.deepcopy(values), dict(versions), dict(approved)
         self.notes, self.review_note, self.phase = state['notes'], state['review_note'], state['phase']
+        self.semantic_findings = findings
         self.revisions, self.calls = state['revisions'], audit['calls']
         # A resumed model must receive the current source again before edits/approvals.
         # Re-read checks after resume; their content depends on every current translation.
@@ -207,7 +223,11 @@ class ProjectSession:
             'task_id': self.task['task_id'], 'job_id': self.root.name, 'updated_at': now(),
             'plan_sha256': self.task['plan_sha256'],
             **self.progress(), 'notes': self.notes, 'review_note': self.review_note,
-            'translations': self.values, 'versions': self.versions, 'reviewed_versions': self.approved})
+            'translations': self.values, 'versions': self.versions, 'reviewed_versions': self.approved,
+            'semantic_findings': self._semantic_issues()})
+
+    def _semantic_issues(self):
+        return [item for key in sorted(self.semantic_findings, key=int) for item in self.semantic_findings[key]]
 
     def version(self, key):
         return 0 if key in self.plan['locked'] else self.versions.get(key)
@@ -355,6 +375,7 @@ class ProjectSession:
                 self.values[k] = copy.deepcopy(row)
                 self.versions[k] = self.versions.get(k, 0)+1
                 self.approved.pop(k, None)
+                self.semantic_findings.pop(k, None)
                 self.review_seen.pop(k, None)
                 self.checks_read = False
                 self.checks_seen.clear()
@@ -365,7 +386,7 @@ class ProjectSession:
                 'rule_warnings': [w for k in ids for w in self.warnings(int(k))][:32]}
 
     def _review(self, args):
-        if set(args) != {'row_ids','note'} or self.phase != 'reviewing':
+        if set(args) not in ({'row_ids','note'}, {'row_ids','note','issues'}) or self.phase != 'reviewing':
             raise ValueError('project_review is only available in the final review turn.')
         ids, note = args['row_ids'], args['note']
         if not isinstance(ids,list) or any(not isinstance(k,str) or not re.fullmatch(r'0|[1-9][0-9]*',k) or int(k)>=len(self.records) for k in ids):
@@ -375,6 +396,11 @@ class ProjectSession:
         for k in ids:
             if self.version(k) is None or self.review_seen.get(k) != self.version(k):
                 raise ValueError('Read the complete CURRENT source and translation in this review turn before approving row '+k)
+        if 'issues' in args:
+            findings = group_semantic_issues(args['issues'], set(ids))
+            for k in ids:
+                self.semantic_findings.pop(k, None)
+            self.semantic_findings.update(findings)
         for k in ids:
             self.approved[k] = self.version(k)
         self.review_note = note
@@ -418,5 +444,7 @@ class ProjectSession:
         self.phase = 'complete'
         self._persist()
         write_json(self.root/'control/project-self-review.json', {'status':'completed', 'kind':'same_codex_self_review',
-            'independent_review':False, 'summary':self.review_note, 'project_notes':self.notes, **self.progress()})
+            'independent_review':False, 'summary':self.review_note, 'project_notes':self.notes,
+            'task_id':self.task['task_id'], 'job_id':self.root.name, 'result_digest':digest(canonical(result)),
+            'semantic_findings':self._semantic_issues(), **self.progress()})
         return result

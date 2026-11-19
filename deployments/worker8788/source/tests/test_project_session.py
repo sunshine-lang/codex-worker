@@ -73,7 +73,15 @@ def test_full_project_read_past_translation_revisions_and_review_versions(settin
     with pytest.raises(ValueError,match='CURRENT'):
         session.call('project_review',{'row_ids':['0'],'note':''})
     read_all(session)
-    session.call('project_review',{'row_ids':['0','1','2'],'note':'same Codex review'})
+    obsolete = {'row_id':'0','decision':'revise','message':'请修改柜门的措辞。'}
+    unresolved = {'row_id':'1','decision':'needs_review','message':'锁定译文需要人工复核。'}
+    with pytest.raises(ValueError,match='invalid'):
+        session.call('project_review',{'row_ids':['0'],'note':'','issues':[unresolved]})
+    session.call('project_review',{'row_ids':['0','1','2'],'note':'same Codex review',
+                                   'issues':[obsolete,unresolved]})
+    session=ProjectSession(settings,session.root)
+    assert session.semantic_findings == {'0':[obsolete],'1':[unresolved]}
+    read_all(session)
     session.call('project_write',{'rows':[translated(0,'请保持柜门打开。')],'notes':'Revised after reading later context.'})
     with pytest.raises(JobError,match='检查'):
         session.finish()
@@ -84,6 +92,8 @@ def test_full_project_read_past_translation_revisions_and_review_versions(settin
     check_all(session)
     result=session.finish()
     assert result['rows']==[translated(0,'请保持柜门打开。'),translated(2)]
+    report=json.loads((session.root/'control/project-self-review.json').read_text(encoding='utf-8'))
+    assert report['semantic_findings']==[unresolved]
     assert session.progress()['reviewed_segments']==3
     assert session.revisions==1
 
@@ -164,7 +174,9 @@ class ProjectRpc(Rpc):
             self.actions.append(('project_write',{'rows':[translated(session.pending[0],'回改后的译文')],'notes':'Corrected earlier text.'}))
             self.actions.append(('project_read',read_args(char_limit=0)))
             for start in range(0,len(session.records),128):
-                self.actions.append(('project_review',{'row_ids':[str(i) for i in range(start,min(start+128,len(session.records)))],'note':'reviewed'}))
+                row_ids=[str(i) for i in range(start,min(start+128,len(session.records)))]
+                issues=[{'row_id':'0','decision':'needs_review','message':'术语用法需确认。'}] if '0' in row_ids else []
+                self.actions.append(('project_review',{'row_ids':row_ids,'note':'reviewed','issues':issues}))
             self.actions.append(('project_read',read_args('checks')))
         self._emit()
         return {'turn':{'id':self.turn_id}}
@@ -239,6 +251,17 @@ def test_one_job_one_thread_model_selects_turns_and_no_unreviewed_result(setting
                     result=(await c.get(final['result_path'])).json()
                     assert result['segments'][0]['target_text']=='回改后的译文'
                     assert result['segments'][1]['target_text']=='TM 原样译文'
+                    assert final['review_status']=='needs_review'
+                    report_response=await c.get(final['review_issues_path'])
+                    assert report_response.status_code==200,report_response.text
+                    assert 'filename="review-issues.json"' in report_response.headers['content-disposition']
+                    report=report_response.json()
+                    assert set(report)=={'review_status','issues','notes'}
+                    assert report['review_status']=='needs_review'
+                    assert {'row_id':'0','row_number':1,'segment_id':'0','category':'semantic',
+                            'code':'SEMANTIC_NEEDS_REVIEW','severity':'error','message':'术语用法需确认。'} in report['issues']
+                    assert any(i['code']=='TERM_MISMATCH' and i['row_id']=='0' for i in report['issues'])
+                    assert any(n['code']=='TM_100_OVERRIDES_TB' and n['row_id']=='1' for n in report['notes'])
                     for b in manifest['batches']:
                         assert b['available']
                         assert (await c.get(b['result_path'])).status_code==200
