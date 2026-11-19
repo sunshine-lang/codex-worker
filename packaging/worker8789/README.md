@@ -11,8 +11,9 @@ packaging/worker8789。工作树与安装目录分开，修改源码后需要重
 .\packaging\worker8789\install.ps1
 ~~~
 
-桌面的 Worker8789.exe 显示本机地址、API Token、模型、思考等级和执行通道。
-首次点击“登录 ChatGPT”可为本实例授权。查询 /v1/ready 时使用控制台显示的 Token。
+桌面的 Worker8789.exe 显示公网调用地址 http://52.62.69.192:8789，可复制地址和 API Token。
+“刷新状态”通过本机接口读取服务生效的供应商、模型、思考等级与通道占用。这些字段在控制台中只读。
+首次授权可在管理员 PowerShell 中运行安装目录下的 desktop\login.ps1。
 Windows 管理员登录后，CodexWorker8789-Recovery 启动服务并定期检查监听状态。
 
 实例安装在 C:\CodexRemoteWorker-AppServer-8789，任务和日志位于

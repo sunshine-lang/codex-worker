@@ -25,8 +25,8 @@ def trial_settings(path):
         data = Path(r'C:\CodexWorkerData-AppServer-8789')
         if (Path(overrides['data_root']).resolve() != data
                 or Path(overrides['codex_home']).resolve() != data / 'private/codex-home'
-                or overrides['bind_host'] != '127.0.0.1'):
-            raise ValueError('8789 requires its own data directory, Codex home and loopback listener')
+                or overrides['bind_host'] not in ('127.0.0.1', '0.0.0.0')):
+            raise ValueError('8789 requires its own data directory, Codex home and a supported bind address')
         return load_settings(path, data / 'private/credentials.local.json')
     required = {'baseline_root', 'data_root', 'port', 'bind_host', 'codex_executable', 'expected_codex_version'}
     if not required <= set(overrides) or set(overrides) - required - {'max_concurrent_jobs', 'task_batch_concurrency', 'authentication_mode', 'codex_home', 'project_context_enabled', 'continuous_project_session'}:
@@ -110,7 +110,7 @@ def build_app(settings):
         pending_login = None
         try:
             if settings.port == 8789:
-                runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': '请在 Worker8789 中登录 ChatGPT。'}
+                runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': '正在等待 8789 的模型连接就绪。'}
                 pending_login = asyncio.create_task(start_after_login())
             else:
                 await runner.start()

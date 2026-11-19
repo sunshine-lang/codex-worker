@@ -38,7 +38,7 @@ foreach ($name in @('launch-packaged-user.ps1','packaged-background.py','worker-
     $contents = [IO.File]::ReadAllText((Join-Path $snapshot "runtime\$name")).Replace('8788','8789')
     [IO.File]::WriteAllText((Join-Path $root $name),$contents)
 }
-foreach ($name in @('start-worker.ps1','watchdog.ps1','settings8789.py','codex_provider.py','login.ps1')) {
+foreach ($name in @('start-worker.ps1','watchdog.ps1','settings8789.py','login.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $desktop
 }
 $pwsh = (Get-Process -Id $PID).Path
@@ -51,11 +51,18 @@ if (!(Test-Path -LiteralPath $instanceConfig)) {
     $cfg.data_root = $data
     $cfg.codex_home = Join-Path $data 'private\codex-home'
     $cfg.port = 8789
-    $cfg.bind_host = '127.0.0.1'
+    $cfg.bind_host = '0.0.0.0'
     foreach ($field in @('codex_executable','expected_codex_version','authentication_mode','max_concurrent_jobs',
         'task_batch_concurrency','project_context_enabled','continuous_project_session')) { $cfg[$field] = $production.$field }
     $cfg.tool_read_roots = @($cfg.tool_read_roots) + @(Split-Path $cfg.codex_executable -Parent)
     $cfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $instanceConfig -Encoding utf8NoBOM
+} else {
+    $cfg = Get-Content -Raw -LiteralPath $instanceConfig | ConvertFrom-Json -AsHashtable
+    if ($cfg.port -ne 8789 -or $cfg.data_root -ne $data) { throw 'Unexpected existing 8789 configuration.' }
+    if ($cfg.bind_host -eq '127.0.0.1') {
+        $cfg.bind_host = '0.0.0.0'
+        $cfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $instanceConfig -Encoding utf8NoBOM
+    }
 }
 $exe = Join-Path $workspace 'build\app-server-8789\Worker8789.exe'
 $installedExe = Join-Path $desktop 'Worker8789.exe'
@@ -80,5 +87,6 @@ $principal = New-ScheduledTaskPrincipal -UserId $operatorName -LogonType Interac
 $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 4) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $recovery -Action $action -Trigger @($onLogon,$repeat) -Settings $settings -Principal $principal -Force | Out-Null
+& (Join-Path $PSScriptRoot 'public-firewall.ps1')
 Start-ScheduledTask -TaskName $recovery
 Write-Output "Installed $userExe and started $recovery."
