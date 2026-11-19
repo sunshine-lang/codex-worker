@@ -450,7 +450,12 @@ class AppServerRunner(CodexRunner):
                 raise
             finally:
                 async def cleanup():
-                    result = await self._finish_thread(thread_id, turn_id, terminal, queue)
+                    try:
+                        result = await self._finish_thread(thread_id, turn_id, terminal, queue)
+                    except Exception as exc:
+                        if self.settings.port == 8789:
+                            raise JobError('PROCESS_CLEANUP_FAILED', '无法确认开发执行通道清理完成。') from exc
+                        raise
                     execution.update(runtime_cleanup=result, ended_at=now())
                     touch(execution=execution)
                 task = asyncio.create_task(cleanup())

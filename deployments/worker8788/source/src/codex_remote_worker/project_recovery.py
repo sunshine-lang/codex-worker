@@ -30,7 +30,8 @@ def queue_resume(settings, task_id):
         db.execute('ATTACH DATABASE ? AS tasks_db', (str(data/'tasks.sqlite3'),))
         db.execute('BEGIN IMMEDIATE')
         for table in ('jobs', 'tasks_db.tasks'):
-            if any(status not in TERMINAL for (status,) in db.execute('SELECT DISTINCT status FROM '+table)):
+            terminal = TERMINAL | {'stopped'} if table == 'tasks_db.tasks' else TERMINAL
+            if any(status not in terminal for (status,) in db.execute('SELECT DISTINCT status FROM '+table)):
                 raise JobError('WORKER_BUSY', '存在未结束任务，请等空闲后恢复。')
         row = db.execute('SELECT record FROM tasks_db.tasks WHERE task_id=?', (task_id,)).fetchone()
         if row is None:

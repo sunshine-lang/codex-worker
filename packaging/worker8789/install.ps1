@@ -52,18 +52,18 @@ if (!(Test-Path -LiteralPath $instanceConfig)) {
     $cfg.codex_home = Join-Path $data 'private\codex-home'
     $cfg.port = 8789
     $cfg.bind_host = '0.0.0.0'
-    foreach ($field in @('codex_executable','expected_codex_version','authentication_mode','max_concurrent_jobs',
-        'task_batch_concurrency','project_context_enabled','continuous_project_session')) { $cfg[$field] = $production.$field }
+    foreach ($field in @('codex_executable','expected_codex_version','authentication_mode')) { $cfg[$field] = $production.$field }
     $cfg.tool_read_roots = @($cfg.tool_read_roots) + @(Split-Path $cfg.codex_executable -Parent)
-    $cfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $instanceConfig -Encoding utf8NoBOM
 } else {
     $cfg = Get-Content -Raw -LiteralPath $instanceConfig | ConvertFrom-Json -AsHashtable
     if ($cfg.port -ne 8789 -or $cfg.data_root -ne $data) { throw 'Unexpected existing 8789 configuration.' }
-    if ($cfg.bind_host -eq '127.0.0.1') {
-        $cfg.bind_host = '0.0.0.0'
-        $cfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $instanceConfig -Encoding utf8NoBOM
-    }
 }
+$cfg.bind_host = '0.0.0.0'
+$cfg.max_concurrent_jobs = 5
+$cfg.task_batch_concurrency = 1
+$cfg.project_context_enabled = $true
+$cfg.continuous_project_session = $true
+$cfg | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $instanceConfig -Encoding utf8NoBOM
 $exe = Join-Path $workspace 'build\app-server-8789\Worker8789.exe'
 $installedExe = Join-Path $desktop 'Worker8789.exe'
 if (!(Test-Path -LiteralPath $installedExe) -or (Get-FileHash $exe).Hash -ne (Get-FileHash $installedExe).Hash) {

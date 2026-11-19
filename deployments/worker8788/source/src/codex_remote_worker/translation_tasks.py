@@ -13,7 +13,7 @@ import threading
 import traceback
 import uuid
 
-from .common import JobError, Redactor, canonical, contained_file, digest, file_digest, now, write_json, accept_directory
+from .common import TERMINAL, JobError, Redactor, canonical, contained_file, digest, file_digest, now, write_json, accept_directory
 from .config import Options
 from .files import new_stage, prepare_record
 from .json_delivery import check_json_result, load_json
@@ -26,7 +26,7 @@ from .review_issues import FILENAME as REVIEW_ISSUES_FILENAME, build_review_repo
 from .segment_languages import PER_SEGMENT, LANGUAGE_INSTRUCTIONS, require_segment_languages
 
 TASK_CONTRACT = 'translation-task/1'
-TASK_TERMINAL = {'completed', 'failed'}
+TASK_TERMINAL = {'completed', 'failed', 'stopped'}
 
 
 @dataclass(frozen=True)
@@ -178,7 +178,7 @@ class TaskStore:
                     return previous, True
                 if (self.data_root/'.maintenance.json').exists():
                     raise JobError('MAINTENANCE', '服务正在维护，请使用原提交编号稍后重试。', 503)
-                count = self.db.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued','running')").fetchone()[0]
+                count = self.db.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued','running','stopping')").fetchone()[0]
                 if count >= capacity:
                     raise JobError('TASK_QUEUE_FULL', '整单任务队列已满，请使用原提交编号稍后重试。', 429)
                 accept_directory(stage, destination, self.data_root)
@@ -201,7 +201,7 @@ class TaskStore:
 
     def active(self):
         with self.lock:
-            return [load_json(r[0]) for r in self.db.execute("SELECT record FROM tasks WHERE status IN ('queued','running') ORDER BY created_at,task_id")]
+            return [load_json(r[0]) for r in self.db.execute("SELECT record FROM tasks WHERE status IN ('queued','running','stopping') ORDER BY created_at,task_id")]
 
 
 def public_task(task, *, include_actions=False):
@@ -216,6 +216,7 @@ def public_task(task, *, include_actions=False):
         task['status'] == 'completed' and task.get('review_issues_sha256')) else {}
     return {**tm_fields, **review_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
+            **({'execution_slot': task['execution_slot']} if task.get('execution_slot') else {}),
             'review_status': task.get('review_report_status', 'not_started'), 'result_kind': 'translation_candidate',
             'self_review_status': task.get('self_review_status', 'not_started'),
             'conversation_mode': 'one_project_one_thread' if task.get('continuous_project_session') else 'independent_batch_threads',
@@ -243,6 +244,7 @@ class TaskManager:
         (settings.data_root/'task_staging').mkdir(exist_ok=True)
         self.store = TaskStore(settings.data_root/'tasks.sqlite3')
         self.cache, self.task, self.stopping = {}, None, False
+        self.transition_lock = asyncio.Lock()
         self.wakeup = asyncio.Event()
         self.rotation = 0
 
@@ -515,9 +517,13 @@ class TaskManager:
             self.store.save(task)
             self.worker.wakeup.set()
         job = self.jobs.get(job_id)
+        if self.settings.port == 8789 and job['status'] == 'queued':
+            task['status'] = 'queued'
         execution = job.get('execution') or {}
         task['codex_thread_id'] = (execution.get('thread_id') or task.get('codex_thread_id')
                                   or (job.get('project_resume') or {}).get('thread_id'))
+        if self.settings.port == 8789 and execution.get('execution_slot'):
+            task['execution_slot'] = execution['execution_slot']
         progress = execution.get('project_session') or {}
         task['session_progress'] = progress
         if 'recent_project_actions' in execution:
@@ -582,10 +588,53 @@ class TaskManager:
         task.update(translated_rows=len(plan['pending']), cursor=len(task['batches']), self_review_status='completed')
         self._finish(task, semantic_issues=semantic_issues)
 
+    async def request_stop(self, task_id):
+        # Serialize stop with session creation and final publication, including their threaded I/O.
+        async with self.transition_lock:
+            task = self.store.get(task_id)
+            if task['status'] in TASK_TERMINAL:
+                return task
+            if not task.get('continuous_project_session'):
+                raise JobError('STOP_UNSUPPORTED', '该订单不属于整单会话模式。', 409)
+            if task['status'] != 'stopping':
+                # Recover a child accepted just before a crash that lost the parent checkpoint.
+                key = str(uuid.uuid5(uuid.NAMESPACE_URL, task_id + ':session'))
+                child = self.jobs.by_key(key)
+                if child:
+                    task['session_job_id'] = child['job_id']
+                    for batch in task['batches']:
+                        batch['job_id'] = child['job_id']
+                    if child['status'] in TERMINAL:
+                        await self.advance(task)
+                        return self.store.get(task_id)
+                task.update(status='stopping', stage='stopping', error=None)
+                self.store.save(task)
+            self.wakeup.set()
+            self._reconcile_stop(task)
+            return task
+
+    def _reconcile_stop(self, task):
+        job_id = task.get('session_job_id')
+        if job_id:
+            job = self.jobs.get(job_id)
+            if job['status'] not in TERMINAL and job['status'] != 'cancelling':
+                job = self.jobs.cancel(job_id)
+                self.worker.wakeup.set()
+            if job['status'] not in TERMINAL:
+                if job.get('error') and job.get('stage') == 'cleanup_failed':
+                    task['error'] = job['error']
+                    self.store.save(task)
+                return
+        for batch in task['batches']:
+            batch['status'] = 'stopped'
+        task.update(status='stopped', stage='stopped', completed_at=now(), error=None)
+        self.store.save(task)
+        self.cache.pop(task['task_id'], None)
+
     async def _loop(self):
         while not self.stopping:
-            tasks = [] if (self.settings.data_root/'.maintenance.json').exists() else self.store.active()
-            if self.settings.project_context_enabled and tasks:
+            tasks = self.store.active()
+            if self.settings.project_context_enabled and self.settings.port != 8789 and tasks:
                 # Requests with the same nonempty project name also drain in acceptance order.
                 heads = {}
                 for task in sorted(tasks, key=lambda t:(t['created_at'],t['task_id'])):
@@ -598,20 +647,32 @@ class TaskManager:
             for task in tasks:
                 if self.stopping:
                     break
-                if (self.settings.data_root/'.maintenance.json').exists():
-                    break
-                try:
-                    await self.advance(task)
-                except Exception as exc:
-                    error = exc.public() if isinstance(exc, JobError) else {'code': 'TASK_INTERNAL_ERROR', 'message': '整单任务处理异常，已保留任务数据。'}
-                    task.update(status='failed', stage='failed', error=error)
-                    if not isinstance(exc, JobError):
-                        task['host_error'] = {'exception_type': type(exc).__name__,
-                            'frames': [{'file': Path(f.filename).name, 'line': f.lineno, 'function': f.name}
-                                       for f in traceback.extract_tb(exc.__traceback__)[-10:]],
-                            'winerror': getattr(exc, 'winerror', None), 'errno': getattr(exc, 'errno', None)}
-                    self.store.save(task)
-                    self.cache.pop(task['task_id'], None)
+                if task['status'] != 'stopping' and (self.settings.data_root/'.maintenance.json').exists():
+                    continue
+                async with self.transition_lock:
+                    task = self.store.get(task['task_id'])
+                    if task['status'] in TASK_TERMINAL:
+                        continue
+                    try:
+                        if task['status'] == 'stopping':
+                            self._reconcile_stop(task)
+                        else:
+                            await self.advance(task)
+                    except Exception as exc:
+                        if task['status'] == 'stopping':
+                            # Keep the durable stop intent until job cleanup is confirmed.
+                            task['error'] = {'code': 'STOP_PENDING', 'message': '正在重试确认执行已停止。'}
+                            self.store.save(task)
+                            continue
+                        error = exc.public() if isinstance(exc, JobError) else {'code': 'TASK_INTERNAL_ERROR', 'message': '整单任务处理异常，已保留任务数据。'}
+                        task.update(status='failed', stage='failed', error=error)
+                        if not isinstance(exc, JobError):
+                            task['host_error'] = {'exception_type': type(exc).__name__,
+                                'frames': [{'file': Path(f.filename).name, 'line': f.lineno, 'function': f.name}
+                                           for f in traceback.extract_tb(exc.__traceback__)[-10:]],
+                                'winerror': getattr(exc, 'winerror', None), 'errno': getattr(exc, 'errno', None)}
+                        self.store.save(task)
+                        self.cache.pop(task['task_id'], None)
             self.wakeup.clear()
             try:
                 await asyncio.wait_for(self.wakeup.wait(), .5)

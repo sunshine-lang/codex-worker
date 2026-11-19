@@ -59,6 +59,7 @@ class ParallelTextAppServerRunner:
             if 'execution' in fields:
                 fields['execution'] = {**fields['execution'], 'execution_slot': lane.slot_id}
             touch(**fields)
+        reusable = True
         try:
             if stopped():
                 raise JobError('CANCEL_REQUESTED', '任务在取得执行通道前已请求停止。')
@@ -67,10 +68,12 @@ class ParallelTextAppServerRunner:
         except JobError as exc:
             if exc.code == 'PROCESS_CLEANUP_FAILED':
                 self.blocked = exc.public()
+                reusable = False
             raise
         finally:
-            self.active.pop(job['job_id'], None)
-            self.available.put_nowait(lane)
+            if reusable:
+                self.active.pop(job['job_id'], None)
+                self.available.put_nowait(lane)
 
     async def close(self):
         self.started = False

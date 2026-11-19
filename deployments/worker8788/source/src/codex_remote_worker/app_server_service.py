@@ -27,7 +27,11 @@ def trial_settings(path):
                 or Path(overrides['codex_home']).resolve() != data / 'private/codex-home'
                 or overrides['bind_host'] not in ('127.0.0.1', '0.0.0.0')):
             raise ValueError('8789 requires its own data directory, Codex home and a supported bind address')
-        return load_settings(path, data / 'private/credentials.local.json')
+        settings = load_settings(path, data / 'private/credentials.local.json')
+        if (not settings.continuous_project_session or not settings.project_context_enabled
+                or settings.max_concurrent_jobs != 5 or settings.task_batch_concurrency != 1):
+            raise ValueError('8789 requires five whole-order slots and one job per order')
+        return settings
     required = {'baseline_root', 'data_root', 'port', 'bind_host', 'codex_executable', 'expected_codex_version'}
     if not required <= set(overrides) or set(overrides) - required - {'max_concurrent_jobs', 'task_batch_concurrency', 'authentication_mode', 'codex_home', 'project_context_enabled', 'continuous_project_session'}:
         raise ValueError('Unknown trial configuration fields')

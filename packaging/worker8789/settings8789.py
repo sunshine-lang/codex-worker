@@ -6,7 +6,7 @@ import sqlite3
 
 ROOT=Path(r'C:\CodexRemoteWorker-AppServer-8789')
 DATA=Path(r'C:\CodexWorkerData-AppServer-8789')
-TERMINAL={'completed','needs_review','failed','cancelled','interrupted'}
+TERMINAL={'completed','needs_review','failed','cancelled','interrupted','stopped'}
 
 
 def assert_idle(data=DATA):

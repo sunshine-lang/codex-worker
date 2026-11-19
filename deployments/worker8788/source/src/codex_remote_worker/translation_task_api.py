@@ -45,7 +45,8 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
 
     @router.get('/capabilities')
     async def capabilities():
-        return {'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
+        return {**({'task_stop': True, 'same_name_parallel': True} if settings.port == 8789 and settings.continuous_project_session else {}),
+                'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'tm_policies': [CONTEXTUAL_TM] if settings.continuous_project_session else [],
                 'language_modes': [PER_SEGMENT],
                 'automatic_batching': True, 'status_query': True, 'result_download': True,
@@ -104,6 +105,12 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
     @router.get('/{task_id}')
     async def status(task_id: str, include_actions: bool = False):
         return public_task(app.state.translation_tasks.store.get(identifier(task_id)), include_actions=include_actions)
+
+    if settings.port == 8789 and settings.continuous_project_session:
+        @router.post('/{task_id}/stop')
+        async def stop_task(task_id: str):
+            task = await app.state.translation_tasks.request_stop(identifier(task_id))
+            return JSONResponse(public_task(task), status_code=202 if task['status'] == 'stopping' else 200)
 
     @router.get('/{task_id}/result')
     async def result(task_id: str):
