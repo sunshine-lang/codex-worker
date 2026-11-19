@@ -11,7 +11,7 @@ class ParallelTextAppServerRunner:
     def __init__(self, settings, *, lane_factory=TextAppServerRunner):
         count = settings.max_concurrent_jobs
         if type(count) is not int or not 1 <= count <= 8:
-            raise ValueError('The 8788 instance supports one to eight execution slots')
+            raise ValueError('The worker instance supports one to eight execution slots')
         if not 1 <= settings.task_batch_concurrency <= count:
             raise ValueError('Invalid batch concurrency')
         self.settings = settings
@@ -25,6 +25,7 @@ class ParallelTextAppServerRunner:
         try:
             for lane in self.lanes:
                 await lane.start()
+            for lane in self.lanes:
                 self.available.put_nowait(lane)
             self.started = True
         except BaseException:

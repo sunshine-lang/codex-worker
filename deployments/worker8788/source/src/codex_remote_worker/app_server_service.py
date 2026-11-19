@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import hashlib
 import json
 from pathlib import Path
@@ -21,6 +21,13 @@ from .sandbox_state import capture_sandbox_state, same_sandbox_state
 
 def trial_settings(path):
     overrides = json.loads(path.read_text(encoding='utf-8-sig'))
+    if overrides.get('port') == 8789:
+        data = Path(r'C:\CodexWorkerData-AppServer-8789')
+        if (Path(overrides['data_root']).resolve() != data
+                or Path(overrides['codex_home']).resolve() != data / 'private/codex-home'
+                or overrides['bind_host'] != '127.0.0.1'):
+            raise ValueError('8789 requires its own data directory, Codex home and loopback listener')
+        return load_settings(path, data / 'private/credentials.local.json')
     required = {'baseline_root', 'data_root', 'port', 'bind_host', 'codex_executable', 'expected_codex_version'}
     if not required <= set(overrides) or set(overrides) - required - {'max_concurrent_jobs', 'task_batch_concurrency', 'authentication_mode', 'codex_home', 'project_context_enabled', 'continuous_project_session'}:
         raise ValueError('Unknown trial configuration fields')
@@ -84,13 +91,36 @@ def build_app(settings):
     runner = ParallelTextAppServerRunner(settings)
     app = create_app(settings, runner=runner)
     baseline_lifespan = app.router.lifespan_context
+
+    async def start_after_login():
+        while True:
+            if (settings.codex_home / 'auth.json').is_file():
+                try:
+                    await runner.start()
+                    runner.blocked = None
+                    return
+                except JobError as exc:
+                    runner.blocked = exc.public()
+                except Exception:
+                    runner.blocked = {'code': 'APP_SERVER_START_FAILED', 'message': '8789 模型服务启动失败，请检查服务日志。'}
+            await asyncio.sleep(5)
+
     @asynccontextmanager
     async def lifespan(app):
+        pending_login = None
         try:
-            await runner.start()
+            if settings.port == 8789:
+                runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': '请在 Worker8789 中登录 ChatGPT。'}
+                pending_login = asyncio.create_task(start_after_login())
+            else:
+                await runner.start()
             async with baseline_lifespan(app):
                 yield
         finally:
+            if pending_login is not None:
+                pending_login.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pending_login
             await runner.close()
     app.router.lifespan_context = lifespan
     return app

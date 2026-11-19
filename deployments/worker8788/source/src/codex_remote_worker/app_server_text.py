@@ -163,7 +163,7 @@ class TextAppServerRunner(AppServerRunner):
                     raise JobError('RUNTIME_MISSING', '运行程序不存在。')
             configured_digest = codex_config_digest(self.settings)
             if self.verified_config is not None and configured_digest != self.verified_config:
-                raise JobError('CODEX_CONFIG_CHANGED', 'Codex 配置变化，请重启 8788 重新验证。')
+                raise JobError('CODEX_CONFIG_CHANGED', f'Codex 配置变化，请重启 {self.settings.port} 重新验证。')
             if self.settings.authentication_mode in ('chatgpt', 'codex_auto'):
                 require_configured_login(self.settings)
             configured = effective_config(self.settings) if self.settings.authentication_mode in ('chatgpt', 'codex_auto') else read_codex_config(self.settings.codex_home)
@@ -188,7 +188,7 @@ class TextAppServerRunner(AppServerRunner):
         except JobError as exc:
             return {'ready': False, **exc.public()}
         except (OSError, ValueError, ImportError):
-            return {'ready': False, 'code': 'PREFLIGHT_REQUIRED', 'message': '8788 运行环境检查失败。'}
+            return {'ready': False, 'code': 'PREFLIGHT_REQUIRED', 'message': f'{self.settings.port} 运行环境检查失败。'}
 
     async def start(self):
         baseline = self.baseline_ready()
@@ -197,7 +197,7 @@ class TextAppServerRunner(AppServerRunner):
         version = await asyncio.to_thread(subprocess.run, [str(self.settings.codex_executable), '--version'],
             capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
         if version.returncode or version.stdout.strip() != 'codex-cli ' + self.settings.expected_codex_version:
-            raise JobError('CODEX_VERSION_MISMATCH', '8788 CLI 版本与配置不一致。')
+            raise JobError('CODEX_VERSION_MISMATCH', f'{self.settings.port} CLI 版本与配置不一致。')
         self.verified_config = codex_config_digest(self.settings)
         await self._connect()
         configured = effective_config(self.settings)

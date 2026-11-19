@@ -61,7 +61,7 @@ class AppServerRpc:
         try:
             self.process = self.process_factory(command, self.root / 'work',
                 {**runtime_environment(self.settings, self.root), 'RUST_LOG': 'codex_app_server=info,codex_app_server::outgoing_message=warn,codex_core=warn,codex_app_server_transport::transport::remote_control=error'},
-                'Local\\CodexWorkerAppServer8788-' + uuid.uuid4().hex)
+                f'Local\\CodexWorkerAppServer{self.settings.port}-' + uuid.uuid4().hex)
             if self.root.name.startswith('appserver-protocol-'):
                 import os
                 from .common import write_json
@@ -84,7 +84,7 @@ class AppServerRpc:
             self.connected = True
             self.tasks = [asyncio.create_task(self._read_stdout()), asyncio.create_task(self._read_stderr())]
             self.server_info = await self.request('initialize', {
-                'clientInfo': {'name': 'codex_worker_appserver_8788', 'title': 'Worker App Server 8788', 'version': '0.4.0-test.1'},
+                'clientInfo': {'name': f'codex_worker_appserver_{self.settings.port}', 'title': f'Worker App Server {self.settings.port}', 'version': '0.4.0-test.1'},
                 'capabilities': {'experimentalApi': True}}, timeout=75)
             await self.notify('initialized', {})
             # No thread/model task exists yet. Retain the exact trusted runtime
