@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import shutil
 import threading
 import time
 import uuid
@@ -11,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 from docx import Document
 from lxml import etree
-from PIL import Image
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -23,6 +23,11 @@ from codex_remote_worker.store import Store
 
 AUTH = {"Authorization": "Bearer " + "test-only-" * 5}
 ROUTE = "/v1/material-tasks"
+
+
+def require_pandoc():
+    if not shutil.which("pandoc"):
+        pytest.importorskip("pypandoc", reason="Install the materials extra for Word conversion tests")
 
 
 def settings(root, slots=2):
@@ -90,6 +95,7 @@ class FixtureRpc:
 
 
 def test_real_word_conversion_http_and_single_thread(tmp_path):
+    require_pandoc()
     replies = []
     async def agent(_settings, _root, session):
         queue = asyncio.Queue()
@@ -173,6 +179,8 @@ def test_restart_recovers_published_and_marks_unfinished(tmp_path):
 
 
 def test_email_link_with_embedded_fallback_keeps_original_picture(tmp_path):
+    require_pandoc()
+    Image = pytest.importorskip("PIL.Image")
     picture = io.BytesIO()
     Image.new("RGB", (8, 8), "blue").save(picture, format="PNG")
     picture.seek(0)
@@ -206,6 +214,8 @@ def test_email_link_with_embedded_fallback_keeps_original_picture(tmp_path):
 
 
 def test_old_word_and_original_page(tmp_path):
+    require_pandoc()
+    pytest.importorskip("pypdfium2")
     from codex_remote_worker.material_documents import office_convert, office_executable
     try:
         office_executable()

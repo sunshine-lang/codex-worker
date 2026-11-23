@@ -2,9 +2,16 @@
 
 这个服务将一次材料提交分配给一个执行位和一个 Codex 会话。输入可以没有附件，也可以包含一份或多份 Word 原件。返回一份项目翻译 Prompt 和逐文件原文 Markdown。任务状态保存在材料服务自己的 SQLite 中。
 
-## 在现有 8789 Windows 服务器部署
+## 在现有 Windows Worker 服务器部署
 
-在仓库的 `codex/materials-preprocess-worker` 分支，以管理员身份打开 PowerShell 7。安装器读取已配置好的 8789 模型、Codex 登录和服务账号配置，在端口 8790 启动独立服务。安装目录为 `C:\CodexRemoteWorker-AppServer-8790`，材料任务数据在 `C:\CodexWorkerData-AppServer-8790`。默认支持五笔提交并行，同名项目的不同提交各自拥有任务号、文件目录和会话。
+在仓库的 `codex/materials-preprocess-worker` 分支，以管理员身份打开 PowerShell 7。安装器优先读取同机 8789 的现有运行配置，也支持仅安装 8788 的服务器。材料服务沿用该实例的 Codex 模型、登录和 Windows 服务账号，单独监听 8790 端口。安装目录为 `C:\CodexRemoteWorker-AppServer-8790`，材料任务数据在 `C:\CodexWorkerData-AppServer-8790`。默认支持五笔提交并行，同名项目的不同提交各自拥有任务号、文件目录和会话。
+
+可以为本分支单独签出一个目录。
+
+~~~powershell
+git clone --single-branch --branch codex/materials-preprocess-worker https://github.com/sunshine-lang/codex-worker.git codex-worker-materials
+Set-Location codex-worker-materials
+~~~
 
 1. 安装 LibreOffice，以便转写旧版 Word 和渲染原件页图。标准安装位置会被自动识别，自定义位置可设置 `MATERIALS_SOFFICE` 指向 `soffice.com`。安装器使用 uv、系统 Python 启动器或现有 Python 的 pip 将附加依赖装到 8790 专属目录。
 2. 执行以下命令。`-LangflowAddress` 可以传 Langflow 的实际出口 IP 或网段，用于配置该来源到 8790 的 Windows 防火墙规则。使用已有反向代理或已有放行规则时可省略此项。公网安全组如适用，也需要允许 Langflow 到达配置的 Worker 地址。

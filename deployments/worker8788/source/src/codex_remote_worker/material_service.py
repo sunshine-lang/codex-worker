@@ -234,6 +234,13 @@ def main():
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     root = Path(config["data_root"])
     settings = load_settings(args.config, root / "private/credentials.local.json")
+    source = args.config.parent / "model-instance.path"
+    if source.is_file():
+        from .app_server_service import trial_settings
+        existing = trial_settings(Path(source.read_text(encoding="utf-8-sig").strip()))
+        if existing.codex_home != settings.codex_home:
+            raise RuntimeError("Configured model instance and materials worker refer to different Codex homes")
+        settings = settings.model_copy(update={"provider_env": {**existing.provider_env, **settings.provider_env}})
     if not settings.codex_executable.is_file():
         raise RuntimeError("Codex executable in the Worker configuration does not exist")
     if settings.authentication_mode in ("chatgpt", "codex_auto"):

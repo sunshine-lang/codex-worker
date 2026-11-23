@@ -1,4 +1,0 @@
-pypandoc_binary==1.17
-pypdfium2==5.15.2
-Pillow>=10,<14
-lxml>=5,<7
