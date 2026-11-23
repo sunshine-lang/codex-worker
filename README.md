@@ -1,5 +1,7 @@
 # Codex Remote Worker
 
+本分支提供独立的项目材料 Worker 和三节点 Langflow 流程。Windows 部署、进度查询和调用示例见 [材料预处理部署说明](packaging/materials/README.md)。
+
 本分支支持一份 JSON 内逐句指定翻译语言对，包含原有的 TM 决策和状态查询。Windows 更新方法见 [按句段语言对翻译](deployments/worker8788/README.md#按句段语言对翻译)。
 
 本分支增加了 v2 订单的按语境复用 TM 策略，并包含已完成动作查询。部署与接口见 [按语境使用 100% TM](deployments/worker8788/README.md#按语境使用-100-tm)。任务状态字段见 [已完成动作查询](deployments/worker8788/README.md#查询任务最近完成的动作)。
