@@ -21,7 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
-materials = ["pypandoc_binary==1.17", "pypdfium2==5.15.2", "Pillow>=10,<14", "lxml>=5,<7"]
+materials = ["defusedxml==0.7.1", "openpyxl==3.1.5", "python-docx==1.2.0", "pypandoc_binary==1.17", "pypdfium2==5.15.2", "Pillow>=10,<14", "lxml>=5,<7"]
 
 [project.scripts]
 codex-worker = "codex_remote_worker.__main__:main"

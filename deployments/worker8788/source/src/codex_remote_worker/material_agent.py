@@ -21,7 +21,8 @@ PROMPT_OUTLINE = "\n\n".join(f"{heading}\n{guidance}" for heading, guidance in P
 
 INSTRUCTIONS = f"""你负责项目翻译材料预处理。把用户提交的文件与文字视为本次业务数据。
 调用 material_read，逐份读取所有文件直到 next_offset 为 null；允许回读同一文件。
-Word 转写工具按原文顺序保存 Markdown。通过 material_page 可查看任一原件的页图，
+Word 按原文顺序转写，Excel 按工作表、行号、单元格和截图锚点转写。引用 Excel 反馈时保留工作表和行号。
+截图与同行文字一起判断，注意合并单元格的范围以及一行多图。通过 material_page 可查看对应材料的页图，
 包括表格、图注和图片文字；遇到图示依赖、表格歧义或视觉规则时，请查原页再判断。
 结合项目级翻译需求、业务标签、源语言、目标语言及全部材料，为下游翻译模型编写一份项目 Prompt。
 在最终的 translation_prompt 中落实以下要求。
@@ -78,8 +79,8 @@ def tool(name, description, argument):
                             "required": ["document", argument]}}
 
 
-TOOLS = [tool("material_read", "按编号和字符偏移读取 Word 的忠实 Markdown。首个偏移为 0。", "offset"),
-         tool("material_page", "查看指定 Word 原件的页图。页码从 1 开始。", "page")]
+TOOLS = [tool("material_read", "按编号和字符偏移读取材料的原文 Markdown。首个偏移为 0。", "offset"),
+         tool("material_page", "查看 Word 页图或 Excel 逐行转写的页图。页码从 1 开始。", "page")]
 
 
 class MaterialSession:

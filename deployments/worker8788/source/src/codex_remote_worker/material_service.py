@@ -63,8 +63,8 @@ def accept(store, root, obj, capacity):
                 raise JobError("INVALID_DOCUMENT", "每份附件需要 source_filename。")
             name = safe_name(obj_doc["source_filename"])
             suffix = Path(name).suffix.lower()
-            if suffix not in (".doc", ".docx"):
-                raise JobError("UNSUPPORTED_DOCUMENT", f"首版仅支持 Word 原件：{name}")
+            if suffix not in (".doc", ".docx", ".xlsx"):
+                raise JobError("UNSUPPORTED_DOCUMENT", f"支持 DOC、DOCX 和 XLSX 原件：{name}")
             encoded = obj_doc.get("content_base64")
             if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_INPUT - total + 2) // 3):
                 raise JobError("INVALID_DOCUMENT", f"附件编码无效或过大：{name}")
@@ -187,7 +187,7 @@ def create_material_app(settings, agent=run_agent):
     @app.get("/v1/ready")
     async def ready():
         return {"ready": True, "service": "materials", "execution_slots": slots,
-                "execution_slot_unit": "whole_submission", "document_types": ["doc", "docx"]}
+                "execution_slot_unit": "whole_submission", "document_types": ["doc", "docx", "xlsx"]}
 
     @app.post("/v1/material-tasks")
     async def submit(request: Request):

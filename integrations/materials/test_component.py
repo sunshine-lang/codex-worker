@@ -1,5 +1,6 @@
 """Gateway configuration tests. Run in a Langflow environment."""
 import asyncio
+import base64
 from functools import partial
 import json
 from pathlib import Path
@@ -64,3 +65,15 @@ def test_export_shows_address_next_to_token():
     assert node["field_order"] == ["request", "worker_url", "worker_token"]
     assert node["template"]["worker_url"] == next(f.to_dict() for f in Gateway.inputs if f.name == "worker_url")
     assert node["template"]["code"]["value"] == (ROOT / "component.py").read_text()
+    entry = next(n for n in graph["nodes"] if n["id"] == "ChatInput-Materials")
+    assert "xlsx" in entry["data"]["node"]["template"]["files"]["fileTypes"]
+
+
+def test_xlsx_is_forwarded_verbatim_for_both_upload_paths(tmp_path):
+    body = {"project_name":"example", "business_tag":"life sciences", "source_language":"en", "target_language":"zh"}
+    source = tmp_path / "feedback.xlsx"
+    source.write_bytes(b"sample workbook bytes")
+    doc = {"source_filename":source.name, "content_base64":base64.b64encode(source.read_bytes()).decode()}
+    gateway = SimpleNamespace(uploaded_file=lambda value: Path(value))
+    assert Gateway.submission(gateway, {**body, "documents":[doc]}, [])["documents"] == [doc]
+    assert Gateway.submission(gateway, body, [str(source)])["documents"] == [doc]

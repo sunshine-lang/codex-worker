@@ -1,14 +1,14 @@
 # 项目材料预处理 Worker
 
-把客户的 Word 指南和项目要求提交一次，即可取回一份供下游翻译模型使用的提示词，以及每份指南的原文 Markdown。这个分支 `codex/materials-preprocess-worker` 提供独立的材料服务，Windows 部署端口为 **8787**。调用方可以直接请求 Worker，也可以使用仓库自带的 Langflow 流程。
+把 Word 指南、XLSX 反馈表和项目要求一并提交，即可取回一份供下游翻译模型使用的提示词，以及每份指南的原文 Markdown。这个分支 `codex/materials-preprocess-worker` 提供独立的材料服务，Windows 部署端口为 **8787**。调用方可以直接请求 Worker，也可以使用仓库自带的 Langflow 流程。
 
 例如，提交一份英文设备面板的操作规范，要求面向现场操作员翻译。Worker 会将文档中的指定译法、错误码保留规则、适用条件和例外整理到 `translation_prompt`，同时在 `documents_markdown` 中交付原文和术语表。多份指南共用一个任务和一个 Codex 会话。遇到表格或图示歧义时，模型可以查看原件页图。零附件也可提交，提示词将依据业务标签、语向和文字要求生成。
 
 ## 快速试用
 
-以下三段在同一个 PowerShell 7.1+ 会话中依次执行。准备一份自己的 `.doc` 或 `.docx`。在 Worker 主机上可用默认的回环地址；从下游机器调用时，先把 `MATERIALS_WORKER_URL` 设为下游可访问的 Worker 基础地址，例如 `http://<Worker 主机>:8787` 或已配置的 HTTPS 代理地址。令牌使用安装时生成的**材料 Worker 专用令牌**，获取方式见下文 Windows 部署一节。
+以下三段在同一个 PowerShell 7.1+ 会话中依次执行。准备一份自己的 `.doc`、`.docx` 或 `.xlsx`。在 Worker 主机上可用默认的回环地址；从下游机器调用时，先把 `MATERIALS_WORKER_URL` 设为下游可访问的 Worker 基础地址，例如 `http://<Worker 主机>:8787` 或已配置的 HTTPS 代理地址。令牌使用安装时生成的**材料 Worker 专用令牌**，获取方式见下文 Windows 部署一节。
 
-**1. 确认服务身份。** 预期返回 `service = materials`、`ready = true` 和执行位数。
+**1. 确认服务身份。** 预期返回 `service = materials`、`ready = true` 和执行位数，`document_types` 包含 `xlsx`。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -98,7 +98,9 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 | `submission_key` | 可选 UUID。省略时由服务生成。需要网络重试时，应在首次提交前由调用方生成并保存。 |
 | `documents` | 可选数组，默认 `[]`。每项包含 `source_filename`（含扩展名的原文件名）及 `content_base64`（文件原始字节的标准 Base64）。多个附件按期望的交付顺序排列。 |
 
-支持非空的 `.doc` 和 `.docx`，每笔提交的附件解码后合计最多 **32 MiB**。Word 内引用的外部图片应先嵌入原件。服务检查 DOCX 解包大小（256 MiB）和条目数（12,000），交付内容预算为 96 MiB，内嵌图片也计入。解析某份附件失败会使该笔任务失败，可通过状态接口定位文件。
+支持非空的 `.doc`、`.docx` 和 `.xlsx`，每笔提交的附件解码后合计最多 **32 MiB**。Word 内引用的外部图片应先嵌入原件。服务检查 DOCX 和 XLSX 解包大小（256 MiB）和条目数（12,000），交付内容预算为 96 MiB，内嵌图片也计入。解析某份附件失败会使该笔任务失败，可通过状态接口定位文件。
+
+**XLSX 行与截图。** 上传原始工作簿。Worker 在任务目录内按工作表、原行号、单元格地址及合并范围转写，将一个或两个单元格锚点定位的内嵌截图放入对应的行；同一行可有多张图，裁剪的图片采用可见区域。模型可查看逐行转写稿的页图。结果保留输入的 `.xlsx` 文件名。公式使用已保存的计算值，缺少缓存时显示可读公式。宏、外链图片、无行锚点的图形和 DISPIMG 单元格图片不在此次支持范围内。
 
 ### 进度、重试与错误
 
@@ -109,7 +111,7 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 
 ## 通过 Langflow 调用
 
-导入仓库的三节点画布。输入节点接收业务 JSON，材料节点调用 Worker，`ChatOutput-Materials` 输出任务响应。仓库附带的调用脚本可读取本地 Word、编码上传，并从 Langflow 外层响应中提取业务 JSON。[画布文件](integrations/materials/flow.json) · [节点源码](integrations/materials/component.py) · [调用脚本](integrations/materials/call.py)
+导入仓库的三节点画布。输入节点接收业务 JSON，材料节点调用 Worker，`ChatOutput-Materials` 输出任务响应。仓库附带的调用脚本可读取本地 Word 或 XLSX、编码上传，并从 Langflow 外层响应中提取业务 JSON。[画布文件](integrations/materials/flow.json) · [节点源码](integrations/materials/component.py) · [调用脚本](integrations/materials/call.py)
 
 | 配置位置 | 配置项 |
 | --- | --- |
@@ -174,6 +176,6 @@ python -X utf8 -m pytest -q -rs tests/test_materials.py
 | --- | --- |
 | [材料 HTTP 服务](deployments/worker8788/source/src/codex_remote_worker/material_service.py) | 请求校验、鉴权、调度、任务状态和结果交付。 |
 | [模型会话](deployments/worker8788/source/src/codex_remote_worker/material_agent.py) | 逐份读取、原页查看、提示词生成和交付校验。 |
-| [Word 转换](deployments/worker8788/source/src/codex_remote_worker/material_documents.py) | DOC/DOCX 转写、图片内嵌、页图生成和大小限制。 |
+| [材料转换](deployments/worker8788/source/src/codex_remote_worker/material_documents.py) | Word / XLSX 转写、图片内嵌、页图生成和大小限制。 |
 | [8788 整单翻译 Worker](deployments/worker8788/README.md) | 同仓库中的翻译订单接口、逐句语言对、上下文 TM、审校与恢复。 |
 | [早期 Worker 基线](deployment/current-runtime/README.md) · [整单接口历史说明](docs/WHOLE_TASK_API.md) · [第三方声明](NOTICE.md) | 根目录 `src/`、早期运行快照和历史接口的参考资料。 |
