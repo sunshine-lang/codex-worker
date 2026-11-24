@@ -14,9 +14,10 @@ internal sealed class Worker8787 : Form
 {
     const string DesktopDir = @"C:\CodexRemoteWorker-AppServer-8790\desktop";
     const string DataDir = @"C:\CodexWorkerData-AppServer-8790";
-    const string ReadyUrl = "http://127.0.0.1:8787/v1/ready";
+    const string ReadyUrl = "http://127.0.0.1:8787/v1/ready?include_channels=true";
 
     readonly Label state = new Label(), details = new Label();
+    readonly ListView channelList = new ListView();
     readonly NotifyIcon tray = new NotifyIcon();
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly EventWaitHandle activation;
@@ -37,7 +38,28 @@ internal sealed class Worker8787 : Form
         return (string)ReadJson(Path.Combine(DataDir, @"private\credentials.local.json"))["CODEX_WORKER_SERVICE_TOKEN"];
     }
 
-    static Dictionary<string, object> Ready()
+    sealed class Channel
+    {
+        public int execution_slot { get; set; }
+        public string status { get; set; }
+        public string task_id { get; set; }
+        public string project_name { get; set; }
+        public string recent_action { get; set; }
+        public string current_file { get; set; }
+        public int documents_completed { get; set; }
+        public int documents_total { get; set; }
+    }
+
+    sealed class ServiceStatus
+    {
+        public bool ready { get; set; }
+        public string service { get; set; }
+        public int execution_slots { get; set; }
+        public string[] document_types { get; set; }
+        public Channel[] channels { get; set; }
+    }
+
+    static ServiceStatus Ready()
     {
         var request = (HttpWebRequest)WebRequest.Create(ReadyUrl);
         request.Proxy = null;
@@ -47,8 +69,8 @@ internal sealed class Worker8787 : Form
         using (var response = request.GetResponse())
         using (var reader = new StreamReader(response.GetResponseStream()))
         {
-            var status = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
-            if (!object.Equals(status["service"], "materials") || !object.Equals(status["ready"], true))
+            var status = new JavaScriptSerializer().Deserialize<ServiceStatus>(reader.ReadToEnd());
+            if (status == null || status.service != "materials" || !status.ready)
                 throw new InvalidOperationException("8787 尚未返回材料服务的就绪状态。");
             return status;
         }
@@ -89,33 +111,48 @@ internal sealed class Worker8787 : Form
         startHidden = hidden;
         Text = "Codex Worker · 8787 项目材料";
         Font = new Font("Microsoft YaHei UI", 10);
-        ClientSize = new Size(650, 332);
+        ClientSize = new Size(780, 538);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
 
         Controls.Add(new Label { Text = "项目材料预处理 Worker 8787", AutoSize = true,
             Location = new Point(24, 18), Font = new Font(Font.FontFamily, 17, FontStyle.Bold) });
-        state.SetBounds(24, 68, 600, 28);
-        details.SetBounds(24, 100, 600, 44);
+        state.SetBounds(24, 64, 732, 28);
+        details.SetBounds(24, 94, 732, 29);
         Controls.Add(state);
         Controls.Add(details);
+
+        channelList.SetBounds(24, 130, 732, 216);
+        channelList.View = View.Details;
+        channelList.FullRowSelect = true;
+        channelList.MultiSelect = false;
+        channelList.ShowItemToolTips = true;
+        channelList.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+        channelList.AccessibleName = "全部执行通道";
+        channelList.Columns.Add("通道", 52);
+        channelList.Columns.Add("状态", 65);
+        channelList.Columns.Add("项目", 154);
+        channelList.Columns.Add("当前动作", 211);
+        channelList.Columns.Add("当前文件", 153);
+        channelList.Columns.Add("已转写 / 总数", 88);
+        Controls.Add(channelList);
 
         string address = "http://127.0.0.1:8787";
         try { address = (string)ReadJson(Path.Combine(DesktopDir, "runtime.json"))["base_url"]; }
         catch (Exception) { } // The status panel reports installation errors on startup.
-        Controls.Add(new Label { Text = "调用地址", AutoSize = true, Location = new Point(24, 150) });
+        Controls.Add(new Label { Text = "调用地址", AutoSize = true, Location = new Point(24, 366) });
         var url = new TextBox { Text = address, ReadOnly = true };
-        url.SetBounds(24, 178, 338, 28);
+        url.SetBounds(24, 394, 454, 28);
         Controls.Add(url);
-        ButtonAt("复制地址", 376, 175, 108, delegate { Clipboard.SetText(url.Text); });
-        ButtonAt("复制 Token", 496, 175, 128, delegate { Clipboard.SetText(Token()); });
-        startButton = ButtonAt("检查 / 启动服务", 24, 235, 146, StartWorker);
-        refreshButton = ButtonAt("刷新状态", 182, 235, 128, RefreshStatus);
-        ButtonAt("查看日志", 322, 235, 128, delegate { Process.Start("explorer.exe", DataDir); });
-        ButtonAt("隐藏到托盘", 462, 235, 162, Hide);
+        ButtonAt("复制地址", 492, 391, 124, delegate { Clipboard.SetText(url.Text); });
+        ButtonAt("复制 Token", 628, 391, 128, delegate { Clipboard.SetText(Token()); });
+        startButton = ButtonAt("检查 / 启动服务", 24, 449, 146, StartWorker);
+        refreshButton = ButtonAt("刷新状态", 182, 449, 128, RefreshStatus);
+        ButtonAt("查看日志", 322, 449, 128, delegate { Process.Start("explorer.exe", DataDir); });
+        ButtonAt("隐藏到托盘", 462, 449, 162, Hide);
         Controls.Add(new Label { Text = "关闭窗口或最小化会隐藏到托盘。要停止服务，请右击托盘图标并选择“退出并停止服务”。",
-            Location = new Point(24, 284), Size = new Size(603, 42), ForeColor = Color.DimGray });
+            Location = new Point(24, 500), Size = new Size(732, 32), ForeColor = Color.DimGray });
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开控制台", null, delegate { ShowWindow(); });
@@ -163,18 +200,48 @@ internal sealed class Worker8787 : Form
         Activate();
     }
 
-    void SetState(string summary, Color color, string detail)
+    void SetState(string summary, Color color, string detail, bool channelsAvailable = false)
     {
         state.Text = "● " + summary;
         state.ForeColor = color;
         details.Text = detail;
         tray.Text = "材料 Worker 8787 · " + summary;
+        if (!channelsAvailable) channelList.Items.Clear();
     }
 
-    void DisplayReady(Dictionary<string, object> status)
+    void DisplayReady(ServiceStatus status)
     {
-        SetState("服务就绪", Color.ForestGreen, string.Format("执行位 {0}　·　输入格式 {1}\n上次检查 {2:HH:mm:ss}（本机时间）",
-            status["execution_slots"], string.Join(" / ", ((System.Collections.IEnumerable)status["document_types"]).Cast<object>()), DateTime.Now));
+        if (status.channels == null) {
+            SetState("服务就绪", Color.ForestGreen, "执行位 " + status.execution_slots + "　·　当前服务版本未提供通道详情");
+            return;
+        }
+        int running = status.channels.Count(c => c.status == "running");
+        string usage = string.Format("运行中 {0} / {1}", running, status.execution_slots);
+        SetState("服务就绪", Color.ForestGreen, string.Format("{0} 个通道　·　输入格式 {1}　·　上次检查 {2:HH:mm:ss}",
+            usage, string.Join(" / ", status.document_types), DateTime.Now), true);
+        tray.Text += " · " + usage;
+
+        channelList.BeginUpdate();
+        try {
+            for (int i = 0; i < status.channels.Length; i++) {
+                var channel = status.channels[i];
+                bool busy = channel.status == "running";
+                var cells = new[] { channel.execution_slot.ToString(), busy ? "运行中" : "空闲",
+                    channel.project_name ?? "", channel.recent_action ?? "", channel.current_file ?? "",
+                    busy ? string.Format("{0} / {1}", channel.documents_completed, channel.documents_total) : "" };
+                ListViewItem row;
+                if (i == channelList.Items.Count) {
+                    row = channelList.Items.Add(new ListViewItem(cells));
+                } else {
+                    row = channelList.Items[i];
+                    for (int col = 0; col < cells.Length; col++) row.SubItems[col].Text = cells[col];
+                }
+                row.ForeColor = busy ? Color.DarkGreen : SystemColors.GrayText;
+                row.ToolTipText = busy ? string.Join("\n", new[] { channel.project_name, channel.task_id,
+                    channel.recent_action, channel.current_file }.Where(value => !string.IsNullOrEmpty(value))) : "";
+            }
+            while (channelList.Items.Count > status.channels.Length) channelList.Items.RemoveAt(channelList.Items.Count - 1);
+        } finally { channelList.EndUpdate(); }
     }
 
     async void RefreshStatus()
@@ -183,7 +250,7 @@ internal sealed class Worker8787 : Form
         checking = true;
         int revision = generation;
         try {
-            var status = await Task.Run((Func<Dictionary<string, object>>)Ready);
+            var status = await Task.Run((Func<ServiceStatus>)Ready);
             if (revision == generation && !IsDisposed) DisplayReady(status);
         }
         catch (Exception ex) {

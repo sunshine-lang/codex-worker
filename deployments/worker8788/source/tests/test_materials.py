@@ -171,22 +171,44 @@ def test_slots_zero_files_and_validation(tmp_path):
     release = threading.Event()
     prompt = example_prompt("本次无外部附件，按业务标签、语向和翻译需求执行。")
     async def agent(_settings, _root, session):
-        await asyncio.to_thread(release.wait, 5)
+        session.update("generating_prompt", "正在生成项目提示词")
+        await asyncio.to_thread(release.wait, 15)
         return session.prompt(json.dumps({"translation_prompt": prompt}))
 
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
         assert client.get("/v1/ready").status_code == 401
-        tasks = [client.post(ROUTE, headers=AUTH, json=request()).json()["task_id"] for _ in range(3)]
+        route = "/v1/ready?include_channels=true"
+        assert client.get(route).status_code == 401
+        assert "channels" not in client.get("/v1/ready", headers=AUTH).json()
+        idle = [{"execution_slot": slot, "status": "idle"} for slot in (1, 2)]
+        assert client.get(route, headers=AUTH).json()["channels"] == idle
+        tasks = [client.post(ROUTE, headers=AUTH, json=request()).json()["task_id"]]
         try:
+            first = wait(client, tasks[0], "running")
+            channels = client.get(route, headers=AUTH).json()["channels"]
+            occupied = first["execution_slot"] - 1
+            assert channels[occupied]["task_id"] == tasks[0]
+            assert channels[1 - occupied] == idle[1 - occupied]
+            tasks.extend(client.post(ROUTE, headers=AUTH, json=request()).json()["task_id"] for _ in range(2))
             first, second = [wait(client, t, "running") for t in tasks[:2]]
             assert {first["execution_slot"], second["execution_slot"]} == {1, 2}
             assert status(client, tasks[2])["status"] == "queued"
+            channels = client.get(route, headers=AUTH).json()["channels"]
+            assert [c["execution_slot"] for c in channels] == [1, 2]
+            assert {c["task_id"] for c in channels} == set(tasks[:2])
+            for job in (first, second):
+                channel = channels[job["execution_slot"] - 1]
+                assert channel["status"] == "running" and channel["task_id"] == job["task_id"]
+                assert channel["project_name"] == job["project_name"]
+                assert channel["recent_action"] == "正在生成项目提示词"
+                assert channel["documents_completed"] == channel["documents_total"] == 0
             assert client.get(f"{ROUTE}/{tasks[0]}/result", headers=AUTH).status_code == 409
         finally:
             release.set()
         for t in tasks:
             wait(client, t, "completed")
             assert client.get(f"{ROUTE}/{t}/result", headers=AUTH).json() == {"translation_prompt": prompt, "documents_markdown": []}
+        assert client.get(route, headers=AUTH).json()["channels"] == idle
         for d in ({"source_filename": "../a.docx", "content_base64": "Zg=="},
                   {"source_filename": "a.doc", "content_base64": "broken!"},
                   {"source_filename": "a.exe", "content_base64": "Zg=="}):

@@ -82,7 +82,7 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 
 | 方法和路径 | 成功响应 | 用途 |
 | --- | --- | --- |
-| `GET /v1/ready` | `200` | 查看 `service`、`ready`、`execution_slots`、`execution_slot_unit` 和 `document_types`。真实模型及文档转换可用上面的材料任务验收。 |
+| `GET /v1/ready` | `200` | 查看 `service`、`ready`、`execution_slots`、`execution_slot_unit` 和 `document_types`。附加 `?include_channels=true` 可返回按编号排列的 `channels` 数组；运行中的通道附带任务号、项目、当前文件、最近动作和文档进度。 |
 | `POST /v1/material-tasks` | `202` 新建，`200` 幂等重放 | 返回任务对象，包括 `task_id`、`submission_key` 和 `status`。 |
 | `GET /v1/material-tasks/{task_id}` | `200` | 返回任务状态、阶段、当前文件、文档进度、最近动作、更新时间，以及可用的执行位和错误信息。 |
 | `GET /v1/material-tasks/{task_id}/result` | `200` | 已完成任务返回 `translation_prompt` 字符串和 `documents_markdown` 数组；其他状态返回 `409`。 |
@@ -154,7 +154,7 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 (Get-Content -LiteralPath $privateConfig -Raw | ConvertFrom-Json).CODEX_WORKER_SERVICE_TOKEN | Set-Clipboard
 ```
 
-安装后双击桌面的 **Worker8787.exe** 即可启动材料服务。窗口每 5 秒刷新一次，也可以点击“刷新状态”。关闭窗口、最小化或点击“隐藏到托盘”会保留服务。双击托盘图标或桌面 EXE 可以再次打开窗口。要停止服务，右击托盘选择 **退出并停止服务**，控制台将在材料进程退出后关闭。安装时可用 `-BaseUrl` 指定窗口里显示的调用地址。
+安装后双击桌面的 **Worker8787.exe** 即可启动材料服务。控制台按编号列出全部执行通道，显示运行中数量、项目、当前动作、文件和已转写文档数。鼠标停留在运行中的行上可查看任务号。每 5 秒自动刷新，也可以点击“刷新状态”。关闭窗口、最小化或点击“隐藏到托盘”会保留服务。双击托盘图标或桌面 EXE 可以再次打开窗口。要停止服务，右击托盘选择 **退出并停止服务**，控制台将在材料进程退出后关闭。安装时可用 `-BaseUrl` 指定窗口里显示的调用地址。
 
 主机重启后可双击 EXE 或从分支目录运行 `.\packaging\materials\start.ps1`。服务会继续调度排队任务，恢复已经写出的结果。运行途中停止且尚未发布结果的任务在下次启动时标为 `interrupted`。升级前等已接受的任务完成，退出托盘程序并停止服务，再运行安装脚本。
 

@@ -185,9 +185,20 @@ def create_material_app(settings, agent=run_agent):
         return await call_next(request)
 
     @app.get("/v1/ready")
-    async def ready():
-        return {"ready": True, "service": "materials", "execution_slots": slots,
-                "execution_slot_unit": "whole_submission", "document_types": ["doc", "docx"]}
+    async def ready(include_channels: bool = False):
+        result = {"ready": True, "service": "materials", "execution_slots": slots,
+                  "execution_slot_unit": "whole_submission", "document_types": ["doc", "docx"]}
+        if include_channels:
+            channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
+            for job in app.state.store.unfinished():
+                slot = job["execution_slot"]
+                channel = channels[slot - 1]
+                channel.update(status=job["status"], task_id=job["job_id"])
+                for field in ("project_name", "stage", "recent_action", "current_file",
+                              "documents_completed", "documents_total"):
+                    channel[field] = job.get(field)
+            result["channels"] = channels
+        return result
 
     @app.post("/v1/material-tasks")
     async def submit(request: Request):
