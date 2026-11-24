@@ -8,6 +8,6 @@ try {
  & 'C:\CodexRemoteWorker-AppServer-8788\desktop\start-worker.ps1' -Mode Serve | Out-Null
  Add-Content -LiteralPath "$data\watchdog.log" -Value "$([DateTime]::UtcNow.ToString('o')) start requested"
 } catch {
- Add-Content -LiteralPath "$data\watchdog.log" -Value "$([DateTime]::UtcNow.ToString('o')) start failed; inspect package-activation.stderr.log"
+ Add-Content -LiteralPath "$data\watchdog.log" -Value "$([DateTime]::UtcNow.ToString('o')) start failed: $($_.Exception.Message)"
  exit 1
 }

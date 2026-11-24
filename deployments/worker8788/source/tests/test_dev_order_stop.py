@@ -41,8 +41,9 @@ async def until(check):
             await asyncio.sleep(.025)
 
 
-def test_same_name_orders_own_single_lanes_and_stop_waits_for_cleanup(settings, monkeypatch, project_markdown_runtime):
-    settings = settings.model_copy(update={'port':8789, 'project_context_enabled':True,
+@pytest.mark.parametrize('port', [8788, 8789])
+def test_same_name_orders_own_single_lanes_and_stop_waits_for_cleanup(settings, monkeypatch, project_markdown_runtime, port):
+    settings = settings.model_copy(update={'port':port, 'project_context_enabled':True,
         'continuous_project_session':True, 'max_concurrent_jobs':5, 'task_batch_concurrency':1})
     settings.doc_converter.write_bytes(b'fixture')
     monkeypatch.setattr(TextAppServerRunner, 'baseline_ready', lambda self: {'ready':True,
@@ -147,13 +148,12 @@ def test_uncertain_cleanup_keeps_slot_reserved(settings):
     asyncio.run(exercise())
 
 
-def test_stop_api_only_on_dev(settings):
+@pytest.mark.parametrize('port,continuous,expected', [(8787,True,False),(8788,True,True),(8789,True,True),(8788,False,False)])
+def test_stop_api_for_independent_whole_orders(settings, port, continuous, expected):
     from test_translation_tasks import JsonRunner
-    for port in (8788, 8789):
-        app = create_app(settings.model_copy(update={
-            'port':port, 'continuous_project_session':True}), runner=JsonRunner())
-        paths = app.openapi()['paths']
-        assert ('/v1/tasks/{task_id}/stop' in paths) == (port == 8789)
+    app = create_app(settings.model_copy(update={
+        'port':port, 'continuous_project_session':continuous}), runner=JsonRunner())
+    assert ('/v1/tasks/{task_id}/stop' in app.openapi()['paths']) == expected
 
 
 def test_stop_intent_survives_reopen_and_uncertain_cleanup(settings):

@@ -517,12 +517,12 @@ class TaskManager:
             self.store.save(task)
             self.worker.wakeup.set()
         job = self.jobs.get(job_id)
-        if self.settings.port == 8789 and job['status'] == 'queued':
+        if self.settings.independent_whole_orders and job['status'] == 'queued':
             task['status'] = 'queued'
         execution = job.get('execution') or {}
         task['codex_thread_id'] = (execution.get('thread_id') or task.get('codex_thread_id')
                                   or (job.get('project_resume') or {}).get('thread_id'))
-        if self.settings.port == 8789 and execution.get('execution_slot'):
+        if self.settings.independent_whole_orders and execution.get('execution_slot'):
             task['execution_slot'] = execution['execution_slot']
         progress = execution.get('project_session') or {}
         task['session_progress'] = progress
@@ -634,7 +634,7 @@ class TaskManager:
     async def _loop(self):
         while not self.stopping:
             tasks = self.store.active()
-            if self.settings.project_context_enabled and self.settings.port != 8789 and tasks:
+            if self.settings.project_context_enabled and not self.settings.independent_whole_orders and tasks:
                 # Requests with the same nonempty project name also drain in acceptance order.
                 heads = {}
                 for task in sorted(tasks, key=lambda t:(t['created_at'],t['task_id'])):

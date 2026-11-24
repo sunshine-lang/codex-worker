@@ -44,7 +44,8 @@ def replace_config(text,model,effort):
 def assert_idle(data=DATA):
     for table in ('tasks','jobs'):
         with sqlite3.connect((data/(table+'.sqlite3')).as_uri()+'?mode=ro',uri=True) as db:
-            if any(n and status not in TERMINAL for status,n in db.execute('select status,count(*) from '+table+' group by status')):
+            terminal = TERMINAL | {'stopped'} if table == 'tasks' else TERMINAL
+            if any(n and status not in terminal for status,n in db.execute('select status,count(*) from '+table+' group by status')):
                 raise ValueError('当前仍有未完成任务。请等待整单结束后再应用；本次未更改配置。')
 
 

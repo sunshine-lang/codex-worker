@@ -1,10 +1,8 @@
 # Example only: no credentials. Apply to the dedicated 8788 Codex home while idle.
 # Use a model available to the authenticated official subscription.
 model_provider = "openai"
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "medium"
-model_context_window = 872000
-model_auto_compact_token_limit = 784800
 cli_auth_credentials_store = "file"
 thread_unload_delay_secs = 0
 

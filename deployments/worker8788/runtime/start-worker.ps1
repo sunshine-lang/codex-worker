@@ -18,14 +18,34 @@ $environment['USERNAME']=$account.username.Split('\')[-1];$environment['USERDOMA
 $environment['PYTHONUTF8']='1';$environment['PYTHONIOENCODING']='utf-8'
 $environment['PYTHONPATH']=$null;$environment['PYTHONHOME']=$null
 $environment['PATH']=@((Split-Path $baseConfig.tool_python),(Join-Path (Split-Path $baseConfig.tool_python) 'Scripts'),(Split-Path $baseConfig.codex_executable),(Split-Path $baseConfig.doc_converter),'C:\Windows\System32','C:\Windows','C:\Windows\System32\WindowsPowerShell\v1.0') -join ';'
-$control=[IO.File]::Open((Join-Path $data '.launch-control.lock'),'OpenOrCreate','ReadWrite','None')
+$lockPath=Join-Path $data '.launch-control.lock'
+$lockDeadline=[datetime]::UtcNow.AddSeconds(90)
+while ($true) {
+ try {
+  $control=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None')
+  break
+ } catch [IO.IOException] {
+  if ($Mode -ne 'Serve' -or [datetime]::UtcNow -ge $lockDeadline) { throw }
+  Start-Sleep -Milliseconds 500
+ }
+}
 try{
  if($Mode -eq 'Serve'){
+  $entrypoint=[regex]::Escape((Join-Path $root 'packaged-background.py'))+'"?\s+serve(?:\s|$)'
+  if(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object {$_.CommandLine -match $entrypoint}){return}
   if(Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue){throw 'Port 8788 already in use; no process stopped'}
  }
  $verb=switch($Mode){'IdentityProbe'{'identity-probe'}'ProtocolProbe'{'protocol-probe'}'ProtocolProbeNoEnvironment'{'protocol-probe-no-environment'}'Doctor'{'doctor'}'Serve'{'serve'}}
  $operation=[Guid]::NewGuid().ToString()
- $launch=Start-Process -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $root 'launch-packaged-user.ps1'),'-Mode',$verb,'-OperationId',$operation) -Credential $credential -LoadUserProfile -Environment $environment -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $data 'package-activation.stdout.log') -RedirectStandardError (Join-Path $data 'package-activation.stderr.log') -PassThru
+ # Use the registered profile for package activation, including the first start after reboot.
+ $sid=[Security.Principal.NTAccount]::new($credential.UserName).Translate([Security.Principal.SecurityIdentifier]).Value
+ $loadProfile=-not (Test-Path -LiteralPath ('Registry::HKEY_USERS\'+$sid))
+ if($loadProfile){
+  $profileKey='HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\'+$sid
+  $profileDir=[Environment]::ExpandEnvironmentVariables((Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath)
+  if((Test-Path -LiteralPath "$profileKey.bak") -or -not (Test-Path -LiteralPath (Join-Path $profileDir 'NTUSER.DAT') -PathType Leaf)){throw 'The registered Windows profile of the 8788 service account needs repair.'}
+ }
+ $launch=Start-Process -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $root 'launch-packaged-user.ps1'),'-Mode',$verb,'-OperationId',$operation) -Credential $credential -LoadUserProfile:$loadProfile -Environment $environment -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $data 'package-activation.stdout.log') -RedirectStandardError (Join-Path $data 'package-activation.stderr.log') -PassThru
  if(-not$launch.WaitForExit(20000)){throw 'Official package activation timed out'}
  $deadline=[DateTime]::UtcNow.AddSeconds(150)
  do{
@@ -36,7 +56,7 @@ try{
   if($receipt.operation_id -eq $operation){break}
   if($launch.ExitCode -ne 0 -and $record.operation_id -ne $operation){
    Get-Content -LiteralPath (Join-Path $data 'package-activation.stderr.log') -Tail 15
-   throw 'Official package activation failed'
+   throw "Official package activation failed (exit $($launch.ExitCode))."
   }
   Start-Sleep -Milliseconds 200
  }while([DateTime]::UtcNow -lt $deadline)

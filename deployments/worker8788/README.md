@@ -1,5 +1,11 @@
 # 8788 整单持续 Codex 会话
 
+## 8788 当前调用基线
+
+本地分支 `codex/8788-aligned` 基于 8789 提交 `5d27d99`。8788 的服务源码在 `source/src/codex_remote_worker/`。后续修改调用接口时，从 `translation_task_api.py` 和 `translation_tasks.py` 入手。
+
+8788 使用 `gpt-6.2-sol / medium`，五个独立通道按整单调度。同名订单可并行，每笔需要模型的订单使用一个作业和一个 Codex 会话。请求使用 8788 自己的地址和服务令牌。通过 `GET /v1/tasks/capabilities` 确认能力，通过 `POST /v1/tasks/{task_id}/stop` 停止指定订单；返回 `stopping` 时继续轮询该订单，直到状态变为 `stopped` 或其他终态。之前版本的发布清单和验证记录保留在本目录。
+
 ## 按句段语言对翻译
 
 `codex/8788-segment-languages-v2` 建立在 `codex/8788-contextual-tm-v2` 上。8788 空闲时停止服务、备份源码，将本分支的 `deployments/worker8788/source/src/codex_remote_worker/` 同步到 8788 安装目录的 `src/codex_remote_worker/`，再按原有方式启动服务。部署成功后，`GET /v1/tasks/capabilities` 的 `language_modes` 包含 `per-segment`。
@@ -38,7 +44,7 @@ Windows 更新时，等 8788 任务处理完毕，按现有方式停止服务并
 
 2026-11-17，控制协议 `ledger/2`。每份需要模型处理的 `/v1/tasks` 整单使用一个 Worker Job、一个执行通道和一个持续的 Codex thread。Codex 自主选择完整材料的读取范围、分页大小、翻译顺序和保存分组，并可在同一轮完成整单翻译与自检。Worker 保存进度并核验交付条件，不再按固定条数派发模型工作。
 
-本次同步的运行配置为官方 GPT 订阅 `gpt-6.1-sol / medium`、一个执行通道、872,000 tokens 上下文和 784,800 tokens 自动压缩阈值。配置示例不含认证信息，不代表其他安装环境已取得相同模型权限。
+2026-11-17 版本的运行配置为官方 GPT 订阅 `gpt-6.1-sol / medium`、一个执行通道、872,000 tokens 上下文和 784,800 tokens 自动压缩阈值。
 
 详见 [持续会话处理与调用说明](CONTINUOUS_SESSION.zh-CN.md)。仓库根目录的基线 Worker 源码不因本次改造改变。
 

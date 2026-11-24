@@ -18,8 +18,10 @@ def test_rejects_8788_data_before_loading_any_credentials(tmp_path):
 
 
 @pytest.mark.parametrize('signed_in', [False, True])
-def test_http_status_and_model_start_follow_private_login(settings, monkeypatch, signed_in):
-    settings.port = 8789
+@pytest.mark.parametrize('port', [8788, 8789])
+def test_http_status_and_model_start_follow_private_login(settings, monkeypatch, signed_in, port):
+    settings.port = port
+    settings.authentication_mode = 'chatgpt'
     if signed_in:
         (settings.codex_home / 'auth.json').write_text('{}')
     calls = []

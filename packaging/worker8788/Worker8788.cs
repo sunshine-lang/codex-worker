@@ -11,20 +11,14 @@ using System.Windows.Forms;
 
 class Worker8788 : Form {
  const string Data = @"C:\CodexWorkerData-AppServer-8788";
- const string TaskName = "CodexWorker8788-Recovery";
  const string Address = "http://52.62.69.192:8788";
- readonly Label state = new Label(), details = new Label(), providerLabel = new Label();
- string sourceSignature="";
+ readonly Label state = new Label(), details = new Label(), providerLabel = new Label(), modelLabel = new Label(), effortLabel = new Label(), channelsLabel = new Label();
  readonly TextBox tokenBox = new TextBox();
- readonly ComboBox modelBox=new ComboBox(), effortBox=new ComboBox();
- readonly Button applyButton=new Button();
- readonly NumericUpDown channelsBox=new NumericUpDown();
- readonly Dictionary<string,string[]> models=new Dictionary<string,string[]>();
- bool settingBusy;
  readonly NotifyIcon tray = new NotifyIcon();
  readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
  readonly JavaScriptSerializer json = new JavaScriptSerializer();
- string token = ""; bool busy, exiting;
+ string token = ""; bool starting, exiting;
+ Task refreshTask = Task.FromResult(0);
  static EventWaitHandle activate;
  static Mutex single;
  Dictionary<string,object> Read(string path) {return json.Deserialize<Dictionary<string,object>>(File.ReadAllText(path));}
@@ -40,21 +34,16 @@ class Worker8788 : Form {
   tokenBox.SetBounds(24,266,510,28); tokenBox.ReadOnly=true; tokenBox.UseSystemPasswordChar=true; Controls.Add(tokenBox);
   ButtonAt("复制 Token",550,264,delegate {if(token.Length>0)Clipboard.SetText(token);});
   var reveal=new CheckBox {Text="显示 Token",Location=new Point(24,303),AutoSize=true}; reveal.CheckedChanged+=delegate {tokenBox.UseSystemPasswordChar=!reveal.Checked;}; Controls.Add(reveal);
-  Controls.Add(new Label {Text="模型",Location=new Point(24,343),AutoSize=true});
-  providerLabel.SetBounds(155,339,510,27);providerLabel.Text="读取当前 Codex 供应商…";Controls.Add(providerLabel);
-  modelBox.SetBounds(24,368,345,30); modelBox.DropDownStyle=ComboBoxStyle.DropDownList; Controls.Add(modelBox);
-  Controls.Add(new Label {Text="思考等级",Location=new Point(385,343),AutoSize=true});
-  effortBox.SetBounds(385,368,130,30); effortBox.DropDownStyle=ComboBoxStyle.DropDownList; Controls.Add(effortBox);
-  modelBox.SelectedIndexChanged+=delegate {FillEfforts(null);};
-  applyButton.Text="应用并重启"; applyButton.SetBounds(535,420,140,34);applyButton.Enabled=false;
-  applyButton.Click+=delegate {ApplySettings();}; Controls.Add(applyButton);
-  Controls.Add(new Label {Text="执行通道（全局 1～8 路）",Location=new Point(24,405),AutoSize=true});
-  channelsBox.SetBounds(24,430,130,30);channelsBox.Minimum=1;channelsBox.Maximum=8;channelsBox.ReadOnly=true;Controls.Add(channelsBox);
-  Controls.Add(new Label {Text="用于不同项目同时执行；同一整单仍按顺序翻译。\n模型、思考等级与通道设置仅在没有未完成任务时应用。",Location=new Point(24,480),Size=new Size(660,52),ForeColor=Color.DimGray});
-  ButtonAt("检查 / 启动",24,545,delegate {StartWorker();});
+  Controls.Add(new Label {Text="服务实际配置（只读）",Location=new Point(24,343),AutoSize=true,ForeColor=Color.DimGray});
+  providerLabel.SetBounds(24,370,660,24); providerLabel.Text="供应商：正在读取服务…"; Controls.Add(providerLabel);
+  modelLabel.SetBounds(24,398,660,24); modelLabel.Text="模型：正在读取服务…"; Controls.Add(modelLabel);
+  effortLabel.SetBounds(24,426,660,24); effortLabel.Text="思考等级：正在读取服务…"; Controls.Add(effortLabel);
+  channelsLabel.SetBounds(24,454,660,24); channelsLabel.Text="执行通道：正在读取服务…"; Controls.Add(channelsLabel);
+  Controls.Add(new Label {Text="本窗口只显示 8788 服务当前生效的配置，不读取或应用桌面 Codex 的模型设置。",Location=new Point(24,487),Size=new Size(660,40),ForeColor=Color.DimGray});
+  ButtonAt("检查 / 启动服务",24,545,delegate {StartWorker();});
   ButtonAt("查看日志",175,545,delegate {Process.Start("explorer.exe",Data);});
   ButtonAt("隐藏到托盘",326,545,delegate {Hide();});
-  ButtonAt("刷新 Codex",477,545,delegate {sourceSignature="";RefreshStatus();});
+  ButtonAt("刷新状态",477,545,delegate {RefreshStatus();});
   var note=new Label {Text="关闭窗口会收进托盘；退出界面不会停止翻译服务。",Location=new Point(24,595),AutoSize=true,ForeColor=Color.DimGray}; Controls.Add(note);
   tray.Icon=SystemIcons.Application; tray.Text="Worker 8788 · 正在检查"; tray.Visible=true;
   var menu=new ContextMenuStrip(); menu.Items.Add("打开控制台",null,delegate {ShowWindow();}); menu.Items.Add("检查 / 启动服务",null,delegate {StartWorker();}); menu.Items.Add("复制调用地址",null,delegate {Clipboard.SetText(Address);}); menu.Items.Add("退出控制台（服务继续运行）",null,delegate {exiting=true; Close();}); tray.ContextMenuStrip=menu; tray.DoubleClick+=delegate {ShowWindow();};
@@ -68,54 +57,89 @@ class Worker8788 : Form {
  void ButtonAt(string text,int x,int y,Action action) {var b=new Button {Text=text,Location=new Point(x,y),Size=new Size(132,32)}; b.Click+=delegate {try{action();}catch(Exception){MessageBox.Show("操作失败，请检查权限或服务日志。");}}; Controls.Add(b);}
  void ShowWindow(){Show();WindowState=FormWindowState.Normal;Activate();}
  string LoadToken(){var cfg=Read(@"C:\CodexRemoteWorker\config.local.json");var secrets=Read(Path.Combine((string)cfg["data_root"],@"private\credentials.local.json"));return (string)secrets["CODEX_WORKER_SERVICE_TOKEN"];}
- Dictionary<string,object> Ready(string secret){var req=(HttpWebRequest)WebRequest.Create("http://127.0.0.1:8788/v1/ready");req.Proxy=null;req.Timeout=4000;req.Headers["Authorization"]="Bearer "+secret;using(var res=req.GetResponse())using(var stream=new StreamReader(res.GetResponseStream()))return json.Deserialize<Dictionary<string,object>>(stream.ReadToEnd());}
- async void RefreshStatus(){if(busy || settingBusy)return;busy=true;try {
-  if(token.Length==0){token=LoadToken();tokenBox.Text=token;}
-  var current=await Task.Run(()=>InvokeController("--describe"));if(IsDisposed)return;
-  if(!(bool)current["ok"])throw new Exception((string)current["message"]);
-  string signature=(string)current["source_signature"];
-  if(signature!=sourceSignature){LoadModels(current);sourceSignature=signature;}
-  providerLabel.Text="Codex 供应商："+(string)current["provider_name"];
-  applyButton.Enabled=models.Count>0 && !settingBusy;
-  Dictionary<string,object> r=null;
-  try{r=await Task.Run(()=>Ready(token));}catch{}
-  if(IsDisposed)return;
-  if(r==null){state.Text="● 服务未启动，可应用当前 Codex 配置恢复";state.ForeColor=Color.Firebrick;details.Text="已读取当前 Codex 的供应商和模型目录。\n选择模型、思考等级后点击“应用并重启”。";tray.Text="Worker 8788 · 等待恢复";return;}
+ Dictionary<string,object> Ready(string secret){
+  var req=(HttpWebRequest)WebRequest.Create("http://127.0.0.1:8788/v1/ready");req.Proxy=null;req.Timeout=4000;req.Headers["Authorization"]="Bearer "+secret;
+  WebResponse response;
+  try { response=req.GetResponse(); }
+  catch(WebException exc){
+   var http=exc.Response as HttpWebResponse;
+   if(http==null && exc.Status==WebExceptionStatus.ConnectFailure)return null;
+   if(http==null)throw;
+   if(http.StatusCode!=HttpStatusCode.ServiceUnavailable){
+    using(http)throw new InvalidOperationException("8788 状态接口返回 HTTP "+(int)http.StatusCode+"。");
+   }
+   response=http;
+  }
+  using(response)using(var stream=new StreamReader(response.GetResponseStream()))
+   return json.Deserialize<Dictionary<string,object>>(stream.ReadToEnd());
+ }
+ void ClearServiceState(string reason){
+  providerLabel.Text="供应商：未读取";modelLabel.Text="模型："+reason;effortLabel.Text="思考等级：—";channelsLabel.Text="执行通道：—";
+ }
+ void SetServiceState(Dictionary<string,object> value){
+  providerLabel.Text="供应商："+Value(value,"configured_provider");
+  modelLabel.Text="模型："+Value(value,"configured_model");
+  effortLabel.Text="思考等级："+Value(value,"configured_reasoning_effort");
+  channelsLabel.Text=String.Format("执行通道：{0} / {1} 使用中　Server 复用：{2}",Value(value,"active_execution_slots"),Value(value,"max_concurrent_jobs"),Value(value,"app_server_reuse"));
+ }
+ string Value(Dictionary<string,object> value,string name){object item;return value.TryGetValue(name,out item)&&item!=null?item.ToString():"未知";}
+ void DisplayStatus(Dictionary<string,object> r){
+  if(r==null){ClearServiceState("服务未启动");state.Text="● 服务未启动，无法读取实际配置";state.ForeColor=Color.Firebrick;details.Text="Worker 只显示 8788 服务自身的配置。\n点击“检查 / 启动服务”后再检查。";tray.Text="Worker 8788 · 服务未启动";return;}
+  SetServiceState(r);
   bool ready=r.ContainsKey("ready") && (bool)r["ready"];
   state.Text=ready?"● 服务就绪 · 8788 正在运行":"● 服务在线，暂未就绪";state.ForeColor=ready?Color.ForestGreen:Color.DarkOrange;
-  details.Text=String.Format("服务供应商：{0}　模型：{1} / {2}\n执行通道：{3} / {4} 使用中　Server 复用：{5}\n本机检查：{6:HH:mm:ss} UTC",r["configured_provider"],r["configured_model"],r["configured_reasoning_effort"],r["active_execution_slots"],r["max_concurrent_jobs"],r["app_server_reuse"],DateTime.UtcNow);
+  details.Text=String.Format("以上模型和思考等级来自 8788 服务实际配置。\n本机检查：{0:HH:mm:ss} UTC",DateTime.UtcNow);
   tray.Text=ready?"Worker 8788 · 服务就绪":"Worker 8788 · 暂未就绪";
- }catch{if(!IsDisposed){applyButton.Enabled=false;state.Text="● 无法读取 Codex 设置";state.ForeColor=Color.Firebrick;details.Text="请检查当前 Codex 配置、认证和模型目录后刷新。";tray.Text="Worker 8788 · 检查失败";}}finally{busy=false;}}
- void FillEfforts(string preferred){effortBox.Items.Clear();string name=modelBox.SelectedItem as string;if(name==null || !models.ContainsKey(name))return;effortBox.Items.AddRange(models[name]);if(preferred!=null && effortBox.Items.Contains(preferred))effortBox.SelectedItem=preferred;else if(effortBox.Items.Contains("high"))effortBox.SelectedItem="high";else if(effortBox.Items.Count>0)effortBox.SelectedIndex=0;}
- void LoadModels(Dictionary<string,object> state){
-  models.Clear();modelBox.Items.Clear();
-  channelsBox.Value=Convert.ToDecimal(state["max_concurrent_jobs"]);
-  foreach(object item in (System.Collections.IEnumerable)state["available_models"]){var m=(Dictionary<string,object>)item;var efforts=new List<string>();foreach(object e in (System.Collections.IEnumerable)m["reasoning_efforts"])efforts.Add((string)e);if(efforts.Count>0)models[(string)m["model"]]=efforts.ToArray();}
-  foreach(string name in models.Keys)modelBox.Items.Add(name);
-  modelBox.SelectedItem=(string)state["configured_model"];
-  if(modelBox.SelectedIndex<0 && modelBox.Items.Count>0)modelBox.SelectedIndex=0;
-  FillEfforts((string)state["configured_reasoning_effort"]);
  }
- Dictionary<string,object> InvokeController(string arguments){
-    var info=new ProcessStartInfo(@"C:\CodexRemoteWorker\.runtime\python313\python.exe",
-      "-X utf8 \"C:\\CodexRemoteWorker-AppServer-8788\\desktop\\settings8788.py\" "+arguments) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=System.Text.Encoding.UTF8,StandardErrorEncoding=System.Text.Encoding.UTF8};
-    using(var process=Process.Start(info)){var errorRead=process.StandardError.ReadToEndAsync();string output=process.StandardOutput.ReadToEnd();process.WaitForExit();return new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(output);}
+ Task<Dictionary<string,object>> ReadStatus(){
+  if(token.Length==0){token=LoadToken();tokenBox.Text=token;}
+  return Task.Run(()=>Ready(token));
  }
- Dictionary<string,object> InvokeSettings(string model,string effort,int channels){return InvokeController("--model \""+model+"\" --effort \""+effort+"\" --channels "+channels.ToString(System.Globalization.CultureInfo.InvariantCulture)+" --source-signature \""+sourceSignature+"\"");}
- async void ApplySettings(){
-  if(settingBusy || busy || modelBox.SelectedItem==null || effortBox.SelectedItem==null)return;
-  string model=(string)modelBox.SelectedItem, effort=(string)effortBox.SelectedItem;
-  int channels=(int)channelsBox.Value;
-  settingBusy=true;applyButton.Enabled=false;modelBox.Enabled=effortBox.Enabled=channelsBox.Enabled=false;state.Text="正在验证并应用设置，请等待…";
+ void RefreshStatus(){
+  if(!starting && refreshTask.IsCompleted)refreshTask=RefreshStatusAsync();
+ }
+ async Task RefreshStatusAsync(){
   try {
-   var result=await Task.Run(()=>InvokeSettings(model,effort,channels));
-   MessageBox.Show((string)result["message"],"Worker 8788 设置",MessageBoxButtons.OK,(bool)result["ok"]?MessageBoxIcon.Information:MessageBoxIcon.Warning);
-  }catch {MessageBox.Show("设置未完成，请检查服务和维护日志。", "Worker 8788");}
-  finally{settingBusy=false;modelBox.Enabled=effortBox.Enabled=channelsBox.Enabled=true;RefreshStatus();}
+   var value=await ReadStatus();
+   if(!IsDisposed && !starting)DisplayStatus(value);
+  }catch(Exception exc){
+   if(IsDisposed || starting)return;
+   ClearServiceState("无法读取");state.Text="● 无法读取服务状态";state.ForeColor=Color.Firebrick;
+   details.Text=exc.Message;tray.Text="Worker 8788 · 检查失败";
+  }
  }
- void StartWorker(){if(models.Count>0 && sourceSignature.Length>0){ApplySettings();return;}RefreshStatus();}
+ static void RequestServiceStart(){
+  var info=new ProcessStartInfo(Path.Combine(Environment.SystemDirectory,"schtasks.exe"),"/Run /TN CodexWorker8788-Recovery") {UseShellExecute=false,CreateNoWindow=true};
+  using(var process=Process.Start(info)){
+   process.WaitForExit();
+   if(process.ExitCode!=0)throw new InvalidOperationException("无法运行计划任务 CodexWorker8788-Recovery，返回码 "+process.ExitCode+"。");
+  }
+ }
+ async void StartWorker(){
+  if(starting)return;
+  starting=true;
+  try{
+   state.Text="正在检查 8788 服务…";state.ForeColor=Color.DarkOrange;
+   await refreshTask;
+   var current=await ReadStatus();
+   if(IsDisposed)return;
+   if(current==null){
+    state.Text="正在启动 8788 服务…";details.Text="正在等待 8788 的状态接口。";
+    await Task.Run((Action)RequestServiceStart);
+    var until=DateTime.UtcNow.AddSeconds(150);
+    while(current==null && DateTime.UtcNow<until){
+     await Task.Delay(1000);
+     if(IsDisposed)return;
+     current=await ReadStatus();
+    }
+    if(current==null)throw new TimeoutException("8788 启动超时。请查看日志目录中的 watchdog.log 和 serve.stderr.log。");
+   }
+   if(!IsDisposed)DisplayStatus(current);
+  }catch(Exception exc){if(!IsDisposed)MessageBox.Show(exc.Message,"Worker 8788 启动",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+  finally{starting=false;}
+ }
  [STAThread] static void Main(string[] args){
-  if(Array.IndexOf(args,"--self-test")>=0){try{Application.EnableVisualStyles();activate=new EventWaitHandle(false,EventResetMode.AutoReset);using(var f=new Worker8788(false)){var r=f.Ready(f.LoadToken()); var current=f.InvokeController("--describe"); f.LoadModels(current); f.sourceSignature=(string)current["source_signature"]; if(f.modelBox.SelectedItem==null || f.effortBox.SelectedItem==null)throw new Exception("No model settings"); var settingsResult=f.InvokeSettings((string)f.modelBox.SelectedItem,(string)f.effortBox.SelectedItem,(int)f.channelsBox.Value);if(!(bool)settingsResult["ok"])throw new Exception("Settings controller failed");f.CreateControl();f.Show();Application.DoEvents();f.Hide();bool hidden=!f.Visible;f.ShowWindow();Application.DoEvents();File.WriteAllText(Path.Combine(Data,"desktop-self-test.json"),"{\"ready\":"+r["ready"].ToString().ToLowerInvariant()+",\"tray_visible\":"+f.tray.Visible.ToString().ToLowerInvariant()+",\"hide_restore\":"+(hidden&&f.Visible).ToString().ToLowerInvariant()+",\"token_loaded\":"+(f.LoadToken().Length>0).ToString().ToLowerInvariant()+"}");var until=DateTime.UtcNow.AddSeconds(6);while(f.busy && DateTime.UtcNow<until){Application.DoEvents();Thread.Sleep(30);}using(var bitmap=new Bitmap(f.Width,f.Height)){f.DrawToBitmap(bitmap,new Rectangle(0,0,f.Width,f.Height));bitmap.Save(Path.Combine(Data,"desktop-self-test.png"),System.Drawing.Imaging.ImageFormat.Png);}File.WriteAllText(Path.Combine(Data,"desktop-settings-self-test.json"),new JavaScriptSerializer().Serialize(new {model=f.modelBox.SelectedItem,effort=f.effortBox.SelectedItem,model_count=f.models.Count,channels=(int)f.channelsBox.Value,channels_min=(int)f.channelsBox.Minimum,channels_max=(int)f.channelsBox.Maximum,settings_button_enabled=f.applyButton.Enabled,settings_controller_connected=true}));f.exiting=true;f.Close();}return;}catch{Environment.Exit(1);}}
+  if(Array.IndexOf(args,"--self-test")>=0){try{Application.EnableVisualStyles();activate=new EventWaitHandle(false,EventResetMode.AutoReset);using(var f=new Worker8788(false)){var sample=new Dictionary<string,object>{{"configured_provider","test-provider"},{"configured_model","test-service-model"},{"configured_reasoning_effort","test-effort"},{"active_execution_slots",1},{"max_concurrent_jobs",2},{"app_server_reuse",true},{"ready",true}};f.SetServiceState(sample);f.CreateControl();f.Show();Application.DoEvents();f.Hide();bool hidden=!f.Visible;f.ShowWindow();Application.DoEvents();File.WriteAllText(Path.Combine(Data,"desktop-self-test.json"),"{\"tray_visible\":"+f.tray.Visible.ToString().ToLowerInvariant()+",\"hide_restore\":"+(hidden&&f.Visible).ToString().ToLowerInvariant()+",\"token_loaded\":"+(f.LoadToken().Length>0).ToString().ToLowerInvariant()+"}");using(var bitmap=new Bitmap(f.Width,f.Height)){f.DrawToBitmap(bitmap,new Rectangle(0,0,f.Width,f.Height));bitmap.Save(Path.Combine(Data,"desktop-self-test.png"),System.Drawing.Imaging.ImageFormat.Png);}File.WriteAllText(Path.Combine(Data,"desktop-service-self-test.json"),new JavaScriptSerializer().Serialize(new {provider=f.providerLabel.Text,model=f.modelLabel.Text,effort=f.effortLabel.Text,channels=f.channelsLabel.Text,service_config_only=true}));f.exiting=true;f.Close();}return;}catch{Environment.Exit(1);}}
   bool first;single=new Mutex(true,"Local\\CodexWorker8788-Desktop",out first);activate=new EventWaitHandle(false,EventResetMode.AutoReset,"Local\\CodexWorker8788-Show");if(!first){activate.Set();return;}
   Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new Worker8788(Array.IndexOf(args,"--tray")>=0));GC.KeepAlive(single);
  }
