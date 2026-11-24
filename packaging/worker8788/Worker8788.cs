@@ -45,7 +45,8 @@ class Worker8788 : Form {
   ButtonAt("隐藏到托盘",326,545,delegate {Hide();});
   ButtonAt("刷新状态",477,545,delegate {RefreshStatus();});
   var note=new Label {Text="关闭窗口会收进托盘；退出界面不会停止翻译服务。",Location=new Point(24,595),AutoSize=true,ForeColor=Color.DimGray}; Controls.Add(note);
-  tray.Icon=SystemIcons.Application; tray.Text="Worker 8788 · 正在检查"; tray.Visible=true;
+  Icon=System.Drawing.Icon.ExtractAssociatedIcon(typeof(Worker8788).Assembly.Location);
+  tray.Icon=Icon; tray.Text="Worker 8788 · 正在检查"; tray.Visible=true;
   var menu=new ContextMenuStrip(); menu.Items.Add("打开控制台",null,delegate {ShowWindow();}); menu.Items.Add("检查 / 启动服务",null,delegate {StartWorker();}); menu.Items.Add("复制调用地址",null,delegate {Clipboard.SetText(Address);}); menu.Items.Add("退出控制台（服务继续运行）",null,delegate {exiting=true; Close();}); tray.ContextMenuStrip=menu; tray.DoubleClick+=delegate {ShowWindow();};
   FormClosing+=delegate(object sender,FormClosingEventArgs e) {if(!exiting && e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
   Resize+=delegate {if(WindowState==FormWindowState.Minimized)Hide();};
