@@ -123,7 +123,8 @@ internal sealed class Worker8787 : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出并停止服务", null, delegate { StopAndExit(); });
         tray.ContextMenuStrip = menu;
-        tray.Icon = SystemIcons.Application;
+        Icon = System.Drawing.Icon.ExtractAssociatedIcon(typeof(Worker8787).Assembly.Location);
+        tray.Icon = Icon;
         tray.DoubleClick += delegate { ShowWindow(); };
         SetState("正在检查", Color.DimGray, "");
         tray.Visible = true;

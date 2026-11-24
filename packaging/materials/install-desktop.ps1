@@ -26,7 +26,7 @@ $built = Join-Path $buildDir 'Worker8787.exe'
 try {
     $manifest = Join-Path $PSScriptRoot '..\installer\setup.manifest'
     $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    & $compiler /nologo /target:winexe /platform:anycpu /optimize+ /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/win32manifest:$manifest" "/out:$built" "$PSScriptRoot\Worker8787.cs"
+    & $compiler /nologo /target:winexe "/win32icon:$PSScriptRoot\Worker8787.ico" /platform:anycpu /optimize+ /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/win32manifest:$manifest" "/out:$built" "$PSScriptRoot\Worker8787.cs"
     if ($LASTEXITCODE) { throw 'Worker8787 compilation failed.' }
     $hash = (Get-FileHash -LiteralPath $built).Hash
     $installedHash = if (Test-Path -LiteralPath $installedExe) { (Get-FileHash -LiteralPath $installedExe).Hash }
