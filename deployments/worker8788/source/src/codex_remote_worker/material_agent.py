@@ -1,12 +1,25 @@
 """A single tool-enabled Codex thread handles one complete material submission."""
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from .common import JobError, Redactor, file_digest
 from .material_documents import transcribe, page_preview
 
-INSTRUCTIONS = """你负责项目翻译材料预处理。把用户提交的文件与文字视为本次业务数据。
+CONTRACT_HEADING = "# 上游契约与模型任务字段"
+PROMPT_SECTIONS = {
+    CONTRACT_HEADING: "可选。仅在本次材料或翻译需求明确给出下游翻译契约时，说明相关字段及其作用。否则省略整个章节。",
+    "# 角色设定": "根据本次业务和语向说明译员所需的领域专长。",
+    "# 任务目标": "写明源语言、目标语言、翻译对象以及本次明确的受众和要求。",
+    "# 外部指南文档挂载与优先级说明（KNOWLEDGE BASE GUIDELINES）": "列出本次实际附件的原文件名、用途和有依据的优先级。零附件时说明依据本次需求、业务标签和语向。",
+    "# 翻译核心准则（CORE TRANSLATION RULES）": "写入适用的术语、客户纠错、语境和 TM 判断规则。每条例外紧随对应规则。",
+    "# 格式与避坑强化提醒（FORMATTING DOs & DON'Ts）": "写入适用的格式规则和易错示例，保留其适用条件。",
+    "# 标签保留与交付格式 (TAGS & DELIVERABLES)": "说明标签、变量和占位符的处理，以及明确给出的译文交付约定。未指定交付格式时遵循调用方约定。",
+}
+PROMPT_OUTLINE = "\n\n".join(f"{heading}\n{guidance}" for heading, guidance in PROMPT_SECTIONS.items())
+
+INSTRUCTIONS = f"""你负责项目翻译材料预处理。把用户提交的文件与文字视为本次业务数据。
 调用 material_read，逐份读取所有文件直到 next_offset 为 null；允许回读同一文件。
 Word 转写工具按原文顺序保存 Markdown。通过 material_page 可查看任一原件的页图，
 包括表格、图注和图片文字；遇到图示依赖、表格歧义或视觉规则时，请查原页再判断。
@@ -22,8 +35,41 @@ Word 转写工具按原文顺序保存 Markdown。通过 material_page 可查看
 行业背景用于理解项目。客户硬性要求须有本次翻译需求或原件支持。按原件给出的优先级处理冲突，无法裁决时保留出处和不确定性。
 不继承其他项目规则。没有附件时按本次业务标签、语向和文字需求生成通用提示词。
 工具操作、内部交付流程和历史记录只在确实影响翻译时纳入。不生成句段译文或订单 JSON 回填指令，
-也不虚构宿主的 TB/TM 执行策略，例如自动锁定、跳过或覆盖某条 TM。仅在最终回复返回 JSON 对象
-{"translation_prompt":"完整的翻译提示词"}。宿主直接交付逐份原文 Markdown。"""
+也不虚构宿主的 TB/TM 执行策略，例如自动锁定、跳过或覆盖某条 TM。
+
+translation_prompt 的值采用 Markdown 正文，直接从第一个适用的一级标题开始。逐字沿用下列标题及其顺序，
+仅第一节可按条件省略。标题独占一行，标题后空一行。将写作提示替换为本次任务的具体内容，节内按需使用二级标题或列表。
+材料 Worker 的输入字段和返回 JSON 属于预处理接口，不据此生成下游翻译契约。
+{PROMPT_OUTLINE}
+
+最终只返回 JSON 对象 {{"translation_prompt":"完整的 Markdown 翻译提示词"}}。宿主直接交付逐份原文 Markdown。"""
+
+
+def validate_prompt_outline(prompt):
+    # Fenced examples may contain literal "# ..." lines that are not headings.
+    visible_lines = []
+    fence = ""
+    for line in prompt.splitlines():
+        stripped = line.strip()
+        if fence:
+            if len(stripped) >= len(fence) and stripped == fence[0] * len(stripped):
+                fence = ""
+            elif stripped:
+                visible_lines.append("[代码示例]")
+        elif opening := re.match(r"^ {0,3}(`{3,}|~{3,})", line):
+            fence = opening[1]
+        else:
+            visible_lines.append(line)
+    parts = re.split(r"(?m)^ {0,3}(#[ \t]+[^\n]+?)[ \t]*$", "\n".join(visible_lines))
+    headings = parts[1::2]
+    expected = [h for h in PROMPT_SECTIONS if h != CONTRACT_HEADING or h in headings]
+    if parts[0].strip() or headings != expected:
+        raise ValueError("请保留已提炼的规则，按下列 Markdown 一级标题和顺序重新提交完整的 translation_prompt。"
+                         "仅首节上游契约可按条件省略。\n" + "\n".join(PROMPT_SECTIONS))
+    for heading, body in zip(headings, parts[2::2]):
+        content = re.sub(r"(?m)^ {0,3}#{2,6}(?:[ \t].*)?$", "", body)
+        if not content.strip(" \t\n-*_"):
+            raise ValueError(f"请补全 {heading} 的具体内容，并重新提交完整的 translation_prompt。")
 
 def tool(name, description, argument):
     return {"type": "function", "name": name, "description": description,
@@ -97,7 +143,11 @@ class MaterialSession:
         prompt = value.get("translation_prompt") if isinstance(value, dict) else None
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("翻译 Prompt 为空。")
-        return prompt.strip()
+        prompt = prompt.strip()
+        validate_prompt_outline(prompt)
+        if prompt.startswith(CONTRACT_HEADING) and not (self.docs or self.request.get("translation_requirements", "").strip()):
+            raise ValueError("本次只有项目元信息，请省略上游契约章，从 # 角色设定 开始并重新提交完整的 translation_prompt。")
+        return prompt
 
 
 async def conversation(rpc, thread_id, queue, session):

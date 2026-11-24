@@ -58,7 +58,7 @@ Langflow 也可接收当前调用者已上传的文件，在附件对象里以 `
 |---|---|---|---|
 | 提交 | 上述 JSON | `POST /v1/material-tasks` | HTTP 202，取得 `task_id` 和 `submission_key`。同键同内容复用原任务，同键改内容返回 409。 |
 | 查询 | `{"operation":"status","task_id":"mat_…"}` | `GET /v1/material-tasks/{task_id}` | 排队、执行、完成或失败状态，同时返回阶段、当前文件、文档完成数、最近动作与更新时间。 |
-| 取回 | `{"operation":"result","task_id":"mat_…"}` | `GET /v1/material-tasks/{task_id}/result` | 完成后返回 `translation_prompt` 字符串和 `documents_markdown` 数组。数组顺序与输入一致，元素含 `source_filename` 和 `markdown`。 |
+| 取回 | `{"operation":"result","task_id":"mat_…"}` | `GET /v1/material-tasks/{task_id}/result` | 完成后返回按一级标题组织的 Markdown 字符串 `translation_prompt` 和 `documents_markdown` 数组。数组顺序与输入一致，元素含 `source_filename` 和 `markdown`。[完整的章节顺序及示例](../../README.md#快速试用) |
 
 Worker 请求使用 `Authorization: Bearer <专用令牌>`。运行 Langflow 时要读取任务响应 JSON 的 `error.code`，Langflow 外层的 HTTP 200 只表示画布完成了本次调用。上传已接收但网络断开时，用相同提交键和同一组原件重试。已获得任务号则直接查询。提供了附件但解析失败时，状态中会给出失败文件和错误，结果接口不会当作空附件交付。
 

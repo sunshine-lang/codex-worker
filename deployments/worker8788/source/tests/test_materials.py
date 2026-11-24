@@ -16,13 +16,33 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from codex_remote_worker.common import JobError, write_json
-from codex_remote_worker.material_agent import conversation
+from codex_remote_worker.material_agent import MaterialSession, conversation
 from codex_remote_worker.material_documents import page_preview, standalone_markdown, transcribe
 from codex_remote_worker.material_service import accept, create_material_app
 from codex_remote_worker.store import Store
 
 AUTH = {"Authorization": "Bearer " + "test-only-" * 5}
 ROUTE = "/v1/material-tasks"
+
+
+def example_prompt(guide_text):
+    return f"""# 角色设定
+你是设备面板英译简中的译员。
+
+# 任务目标
+将操作说明译为简体中文。
+
+# 外部指南文档挂载与优先级说明（KNOWLEDGE BASE GUIDELINES）
+{guide_text}
+
+# 翻译核心准则（CORE TRANSLATION RULES）
+结合同一标签出现的场景判断译法。即使 TM 匹配率为 100%，也要核对上下文和客户修订。
+
+# 格式与避坑强化提醒（FORMATTING DOs & DON'Ts）
+保留量值、单位以及表格中各列的对应关系。
+
+# 标签保留与交付格式 (TAGS & DELIVERABLES)
+保留占位符，按本次任务约定交付译文。"""
 
 
 def require_pandoc():
@@ -70,23 +90,25 @@ def wait(client, task, target):
 
 
 class FixtureRpc:
-    """First answer too early, then walk both actual files in a single thread."""
+    """Exercise read completion and a formatting correction on the original thread."""
     def __init__(self, queue, count):
         self.queue, self.count = queue, count
-        self.turns, self.replies = [], []
+        self.turns, self.replies, self.messages = [], [], []
 
     async def request(self, method, data):
         assert method == "turn/start"
         self.turns.append(data["threadId"])
+        self.messages.append(data["input"][0]["text"])
         turn = "turn-" + str(len(self.turns))
         if len(self.turns) == 2:
             for i in range(self.count):
                 await self.queue.put({"id": i, "method": "item/tool/call",
                     "params": {"threadId": data["threadId"], "turnId": turn, "tool": "material_read",
                                "arguments": {"document": i, "offset": 0}}})
+        prompt = "【角色设定】自由格式正文" if len(self.turns) == 2 else example_prompt("按本次两份材料中的项目要求执行。")
         await self.queue.put({"method": "turn/completed", "params": {"threadId": data["threadId"],
             "turn": {"id": turn, "status": "completed", "items": [{"type": "agentMessage", "phase": "final_answer",
-                "text": json.dumps({"translation_prompt": "fixture prompt"})}]}}})
+                "text": json.dumps({"translation_prompt": prompt})}]}}})
         return {"turn": {"id": turn}}
 
     async def _write(self, reply):
@@ -101,7 +123,9 @@ def test_real_word_conversion_http_and_single_thread(tmp_path):
         queue = asyncio.Queue()
         rpc = FixtureRpc(queue, len(session.docs))
         prompt = await conversation(rpc, "same-thread", queue, session)
-        assert rpc.turns == ["same-thread", "same-thread"]
+        assert rpc.turns == ["same-thread"] * 3
+        assert "仍有文档尚未读完" in rpc.messages[1]
+        assert "Markdown 一级标题" in rpc.messages[2]
         replies.extend(rpc.replies)
         return prompt
 
@@ -114,7 +138,7 @@ def test_real_word_conversion_http_and_single_thread(tmp_path):
         assert final["documents_completed"] == final["documents_total"] == 2
         result = client.get(f"{ROUTE}/{task}/result", headers=AUTH).json()
         assert set(result) == {"translation_prompt", "documents_markdown"}
-        assert result["translation_prompt"] == "fixture prompt"
+        assert result["translation_prompt"] == example_prompt("按本次两份材料中的项目要求执行。")
         assert [d["source_filename"] for d in result["documents_markdown"]] == ["材料.docx"] * 2
         for i, text in enumerate(("Alpha original", "Beta original")):
             assert text in replies[i] and text in result["documents_markdown"][i]["markdown"]
@@ -127,9 +151,10 @@ def test_real_word_conversion_http_and_single_thread(tmp_path):
 
 def test_slots_zero_files_and_validation(tmp_path):
     release = threading.Event()
+    prompt = example_prompt("本次无外部附件，按业务标签、语向和翻译需求执行。")
     async def agent(_settings, _root, session):
         await asyncio.to_thread(release.wait, 5)
-        return session.prompt('{"translation_prompt":"fixture industry prompt"}')
+        return session.prompt(json.dumps({"translation_prompt": prompt}))
 
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
         assert client.get("/v1/ready").status_code == 401
@@ -143,7 +168,7 @@ def test_slots_zero_files_and_validation(tmp_path):
             release.set()
         for t in tasks:
             wait(client, t, "completed")
-            assert client.get(f"{ROUTE}/{t}/result", headers=AUTH).json()["documents_markdown"] == []
+            assert client.get(f"{ROUTE}/{t}/result", headers=AUTH).json() == {"translation_prompt": prompt, "documents_markdown": []}
         for d in ({"source_filename": "../a.docx", "content_base64": "Zg=="},
                   {"source_filename": "a.doc", "content_base64": "broken!"},
                   {"source_filename": "a.exe", "content_base64": "Zg=="}):
@@ -175,7 +200,31 @@ def test_restart_recovers_published_and_marks_unfinished(tmp_path):
     write_json(tmp_path / "tasks" / tasks[0] / "result.json", {"translation_prompt": "saved", "documents_markdown": []})
     with TestClient(create_material_app(settings(tmp_path))) as client:
         assert status(client, tasks[0])["status"] == "completed"
+        assert client.get(f"{ROUTE}/{tasks[0]}/result", headers=AUTH).json()["translation_prompt"] == "saved"
         assert status(client, tasks[1])["status"] == "interrupted"
+
+
+def test_explicit_contract_and_fenced_heading_example(tmp_path):
+    session = MaterialSession(tmp_path, {"request": {"translation_requirements": "翻译 src，note 仅供参考。"},
+                                         "documents": []}, lambda **_: None)
+    prompt = "# 上游契约与模型任务字段\n\nsrc 为待译原文，note 为上下文。\n\n" + example_prompt("按本次文字要求执行。")
+    prompt += "\n\n## 标签示例\n\n```text\n# 原文中的标签\n```"
+    assert session.prompt(json.dumps({"translation_prompt": prompt})) == prompt
+
+
+@pytest.mark.parametrize("prompt", [
+    example_prompt(""),
+    example_prompt("## 参考资料\n\n---"),
+    "# 上游契约与模型任务字段\n\n源字段和目标字段。\n\n" + example_prompt("按业务标签执行。"),
+    example_prompt("按项目需求执行。").replace("# 角色设定", "【角色设定】"),
+    example_prompt("按项目需求执行。").replace("# 任务目标", "# 角色设定\n\n重复。\n\n# 任务目标"),
+    example_prompt("按项目需求执行。") + "\n\n# 上游契约与模型任务字段\n\n字段说明。",
+    "```markdown\n" + example_prompt("按项目需求执行。") + "\n```",
+])
+def test_invalid_prompt_layout_requests_correction(tmp_path, prompt):
+    session = MaterialSession(tmp_path, {"request": {}, "documents": []}, lambda **_: None)
+    with pytest.raises(ValueError, match="重新提交完整的 translation_prompt"):
+        session.prompt(json.dumps({"translation_prompt": prompt}))
 
 
 def test_email_link_with_embedded_fallback_keeps_original_picture(tmp_path):

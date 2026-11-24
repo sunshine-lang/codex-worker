@@ -62,11 +62,11 @@ foreach ($item in $result.documents_markdown) {
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).json" -Encoding utf8NoBOM
 ```
 
-以下是缩短的结果示例。提示词由模型按本次提交生成；Markdown 由文档转换工具生成，数组顺序与输入一致。附件中的内嵌图片会以 data URI 出现在对应 Markdown 中。零附件时返回 `"documents_markdown": []`。
+以下是缩短的结果示例。`translation_prompt` 是可直接保存为 Markdown 的字符串，按原 Prompt 的六个业务一级标题组织。本次输入若明确给出下游翻译契约，可在最前面增加「上游契约与模型任务字段」。零附件时仍保留外部指南一节，说明本次依据的业务标签、语向和文字要求。`documents_markdown` 按附件顺序交付原文和内嵌图片，零附件时返回 `[]`。
 
 ```json
 {
-  "translation_prompt": "将英文设备面板操作说明译为简体中文。操作步骤使用祈使句。将 Reset button 统一译为“复位按钮”，错误码 E17 原样保留。",
+  "translation_prompt": "# 角色设定\n\n你是设备面板英译简中的译员。\n\n# 任务目标\n\n为现场操作员翻译操作步骤，使用祈使句。\n\n# 外部指南文档挂载与优先级说明（KNOWLEDGE BASE GUIDELINES）\n\n依据本次《客户指南.docx》中的术语表和错误码要求。\n\n# 翻译核心准则（CORE TRANSLATION RULES）\n\n面板操作说明中的 Reset button 译为“复位按钮”。使用 TM 时，即使匹配率为 100%，也应核对当前语境和客户修订。\n\n# 格式与避坑强化提醒（FORMATTING DOs & DON'Ts）\n\n错误码 E17 的大小写和数字原样保留。\n\n# 标签保留与交付格式 (TAGS & DELIVERABLES)\n\n保留原文标签和占位符，按调用方约定交付简体中文译文。",
   "documents_markdown": [
     {
       "source_filename": "客户指南.docx",
