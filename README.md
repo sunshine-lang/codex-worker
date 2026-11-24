@@ -113,7 +113,8 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 
 | 配置位置 | 配置项 |
 | --- | --- |
-| Langflow 服务端 | `MATERIALS_WORKER_URL` 填 Langflow 所在机器可访问的 Worker 基础地址。将材料令牌填入「项目材料 Worker」节点的密钥框，或设置 `MATERIALS_WORKER_TOKEN`。节点中的令牌优先。 |
+| Langflow 画布 | 在第二个「项目材料 Worker」节点填写 **Worker 调用地址** 和 **材料 Worker 令牌**，然后保存。地址填写服务基址，支持带路径前缀的 HTTPS 反向代理。 |
+| Langflow 服务端 | 地址或令牌字段留空时，分别读取 `MATERIALS_WORKER_URL` 和 `MATERIALS_WORKER_TOKEN`。正式远程接入使用 HTTPS 或受保护网络。 |
 | 调用脚本所在机器 | `MATERIALS_FLOW_URL` 填完整的 `https://<Langflow 主机>/api/v1/run/<flow_id>`。`LANGFLOW_API_KEY` 用于 Langflow 的 `x-api-key` 请求头，未设置时脚本会提示隐藏输入。 |
 
 从仓库根目录执行。将示例 URL、附件路径和任务号替换为实际值。可重复使用 `--document` 上传多份文件，省略该参数即可验证零附件场景。

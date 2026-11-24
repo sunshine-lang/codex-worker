@@ -15,7 +15,7 @@ Set-Location codex-worker-materials
 
 1. 安装 LibreOffice，以便转写旧版 Word 和渲染原件页图。标准安装位置会被自动识别，自定义位置可设置 `MATERIALS_SOFFICE` 指向 `soffice.com`。安装器使用 uv、系统 Python 启动器或现有 Python 的 pip 将附加依赖装到材料服务目录。
 2. 执行以下命令。升级已运行的旧版时，等材料任务结束并停止旧材料实例后再安装。服务器上的 TCP 8787 需可用。安装器会把自己管理的已有 Windows 防火墙规则迁至 8787，沿用原放行来源。首次配置可用 `-LangflowAddress` 指定 Langflow 的实际出口 IP 或网段。若使用云安全组，允许该来源访问 8787。若使用反向代理，将材料请求转发至该端口。
-3. 将专用令牌填入 Langflow 的“项目材料 Worker”节点并保存。也可以在 Langflow 服务环境设置 `MATERIALS_WORKER_TOKEN`。已部署画布默认直连开发服务器的 8787 端口。若用 `MATERIALS_WORKER_URL` 覆盖地址，请将直连 URL 的端口配置为 8787，使用 HTTPS 反向代理时填写代理地址。
+3. 打开 Langflow 画布的第二个「项目材料 Worker」节点，在 **Worker 调用地址** 填写服务基址，在 **材料 Worker 令牌** 粘贴专用令牌并保存。线上画布预填开发服务器的 8787 地址。使用 HTTPS 代理时填写代理基址。地址、令牌留空时分别读取 Langflow 服务环境的 `MATERIALS_WORKER_URL`、`MATERIALS_WORKER_TOKEN`。
 
 ~~~powershell
 .\packaging\materials\install.ps1 -Slots 5
@@ -33,7 +33,7 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 
 ## Langflow 与上游契约
 
-流程是请求输入 → 项目材料 Worker → 任务响应。可移植的画布在 [flow.json](../../integrations/materials/flow.json)，节点源码在 [component.py](../../integrations/materials/component.py)。导入新实例时，通过 Langflow 服务环境设置 `MATERIALS_WORKER_URL`，再配置独立令牌。运行入口使用 `POST /api/v1/run/<flow_id>`，以聊天输入传入序列化的业务 JSON，输出组件是 `ChatOutput-Materials`。
+流程是请求输入 → 项目材料 Worker → 任务响应。可移植的画布在 [flow.json](../../integrations/materials/flow.json)，节点源码在 [component.py](../../integrations/materials/component.py)。导入新实例后，在第二个节点配置地址与令牌。运行入口使用 `POST /api/v1/run/<flow_id>`，以聊天输入传入序列化的业务 JSON，输出组件是 `ChatOutput-Materials`。
 
 以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件支持 `.doc` 和 `.docx`，附件原始字节合计上限为 32 MiB。
 
