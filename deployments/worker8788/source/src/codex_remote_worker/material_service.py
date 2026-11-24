@@ -224,7 +224,22 @@ def create_material_app(settings, agent=run_agent):
     return app
 
 
-def main():
+async def serve_with_desktop_stop(server, stop_file):
+    async def watch_stop():
+        while not stop_file.exists():
+            await asyncio.sleep(0.4)
+        server.should_exit = True
+
+    watcher = asyncio.create_task(watch_stop())
+    try:
+        await server.serve()
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        stop_file.unlink(missing_ok=True)
+
+
+def main(stop_file=None):
     import uvicorn
     from .config import load_settings
     from .material_documents import office_executable, pandoc_executable
@@ -248,8 +263,12 @@ def main():
         require_configured_login(settings)
     office_executable()
     pandoc_executable()
-    uvicorn.run(create_material_app(settings), host=settings.bind_host, port=settings.port,
-                access_log=False, workers=1)
+    server = uvicorn.Server(uvicorn.Config(create_material_app(settings), host=settings.bind_host,
+                                           port=settings.port, access_log=False, workers=1))
+    if stop_file is None:
+        server.run()
+    else:
+        asyncio.run(serve_with_desktop_stop(server, stop_file))
 
 
 if __name__ == "__main__":

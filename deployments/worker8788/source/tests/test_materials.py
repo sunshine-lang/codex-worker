@@ -18,11 +18,29 @@ from pydantic import SecretStr
 from codex_remote_worker.common import JobError, write_json
 from codex_remote_worker.material_agent import MaterialSession, conversation
 from codex_remote_worker.material_documents import page_preview, standalone_markdown, transcribe
-from codex_remote_worker.material_service import accept, create_material_app
+from codex_remote_worker.material_service import accept, create_material_app, serve_with_desktop_stop
 from codex_remote_worker.store import Store
 
 AUTH = {"Authorization": "Bearer " + "test-only-" * 5}
 ROUTE = "/v1/material-tasks"
+
+
+def test_desktop_stop_uses_only_the_current_launch_request(tmp_path):
+    stale = tmp_path / "serve.stop.previous"
+    current = tmp_path / "serve.stop.current"
+    stale.touch()
+    server = SimpleNamespace(should_exit=False)
+
+    async def serve():
+        await asyncio.sleep(0.45)
+        assert not server.should_exit
+        current.touch()
+        while not server.should_exit:
+            await asyncio.sleep(0.02)
+
+    server.serve = serve
+    asyncio.run(asyncio.wait_for(serve_with_desktop_stop(server, current), timeout=4))
+    assert stale.exists() and not current.exists()
 
 
 def example_prompt(guide_text):

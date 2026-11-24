@@ -154,7 +154,9 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 (Get-Content -LiteralPath $privateConfig -Raw | ConvertFrom-Json).CODEX_WORKER_SERVICE_TOKEN | Set-Clipboard
 ```
 
-主机重启后可从分支目录重新运行 `.\packaging\materials\start.ps1`。服务会继续调度排队任务，恢复已经写出的结果；运行途中中断且没有已发布结果的任务标为 `interrupted`。升级前等已接受的任务完成，停止材料实例，再运行安装和启动脚本。
+安装后双击桌面的 **Worker8787.exe** 即可启动材料服务。窗口每 5 秒刷新一次，也可以点击“刷新状态”。关闭窗口、最小化或点击“隐藏到托盘”会保留服务。双击托盘图标或桌面 EXE 可以再次打开窗口。要停止服务，右击托盘选择 **退出并停止服务**，控制台将在材料进程退出后关闭。安装时可用 `-BaseUrl` 指定窗口里显示的调用地址。
+
+主机重启后可双击 EXE 或从分支目录运行 `.\packaging\materials\start.ps1`。服务会继续调度排队任务，恢复已经写出的结果。运行途中停止且尚未发布结果的任务在下次启动时标为 `interrupted`。升级前等已接受的任务完成，退出托盘程序并停止服务，再运行安装脚本。
 
 若首次启动日志显示 `pypandoc` 缺少 `get_pandoc_path`，检查服务账号对 `vendor\pypandoc\__init__.py` 和 `vendor\pypandoc\files\pandoc.exe` 的读取和执行权限。本机部署曾因依赖子目录没有继承 `vendor` 的访问权限而出现该错误。修复该实例依赖目录的权限继承后，重新运行启动脚本。
 

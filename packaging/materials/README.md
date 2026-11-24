@@ -29,7 +29,9 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 (Get-Content -LiteralPath $privateConfig -Raw | ConvertFrom-Json).CODEX_WORKER_SERVICE_TOKEN | Set-Clipboard
 ~~~
 
-启动脚本会调用受认证的 `GET /v1/ready`，检查 HTTP 服务和通道配置。首次真实模型验收使用下文的材料提交。运行时日志位于材料数据目录的 `serve.stderr.log`。主机重启后可再次运行启动脚本。已有排队任务继续调度，已发布的结果可用原任务号找回，中断的在途任务显示 `interrupted`，需要重新处理时使用新提交键。
+安装器会将 `Worker8787.exe` 放在当前用户的 Windows 桌面。双击后会启动或接管已运行的材料服务。“刷新状态”读取带鉴权的 `GET /v1/ready`。最小化、关闭窗口或点击“隐藏到托盘”都会保留服务，双击托盘图标或再次双击桌面 EXE 可打开窗口。右击托盘选择“退出并停止服务”后，控制台会等待材料进程退出。
+
+`install.ps1 -BaseUrl` 可指定控制台显示和复制的调用地址，默认是本机地址。主机重启后可再次双击 EXE。排队任务会继续调度，已发布的结果可用原任务号找回，中断的在途任务显示 `interrupted`，需要重新处理时使用新提交键。首次真实模型验收可用下文的材料提交。运行日志位于材料数据目录的 `serve.stderr.log`。
 
 ## Langflow 与上游契约
 

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import traceback
+from uuid import UUID
 
 root = Path(__file__).resolve().parent
 data = Path(r"C:\CodexWorkerData-AppServer-8790")
@@ -29,10 +30,12 @@ def start():
     os.environ["CODEX_WINDOWS_REGISTERED_CORE"] = "1"
     os.environ["CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY"] = family.value
     os.environ["MATERIALS_SOFFICE"] = (root / "office.path").read_text(encoding="utf-8-sig").strip()
-    write_json(data / "serve.process.json", {"operation_id": options.operation_id, "ProcessId": os.getpid(), "created_at": now()})
+    operation = str(UUID(options.operation_id))
+    write_json(data / "serve.process.json", {"operation_id": operation, "ProcessId": os.getpid(),
+                                             "created_at": now(), "desktop_stop": True})
     from codex_remote_worker.material_service import main
     sys.argv = [sys.argv[0], "--config", str(root / "config.trial.json")]
-    main()
+    main(stop_file=data / ("serve.stop." + operation))
 
 if __name__ == "__main__":
     try:

@@ -1,5 +1,5 @@
 # Use the host's existing registered Codex runtime. Run in an elevated PowerShell 7.
-param([ValidateRange(1,8)][int]$Slots = 5, [string]$LangflowAddress)
+param([ValidateRange(1,8)][int]$Slots = 5, [string]$LangflowAddress, [string]$BaseUrl)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $snapshot = Join-Path $repo 'deployments\worker8788'
@@ -85,6 +85,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     & $python -m pip install --only-binary=:all: --upgrade --target $vendor.FullName @requirements
 }
 if ($LASTEXITCODE) { throw 'Dependency install failed. Install uv or a Python with pip and retry.' }
+# pip can move user-private staging ACLs into vendor on Windows.
+& icacls.exe $vendor.FullName /inheritance:e /T /Q | Out-Null
+if ($LASTEXITCODE) { throw 'Unable to apply dependency directory inheritance for the service account.' }
 $package = New-Item -Force -ItemType Directory -Path "$root\src\codex_remote_worker"
 Get-ChildItem -LiteralPath "$snapshot\source\src\codex_remote_worker" -Filter '*.py' -File |
     Copy-Item -Destination $package.FullName -Force
@@ -108,4 +111,5 @@ if ($rules.Count) {
 } elseif ($LangflowAddress) {
     New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -RemoteAddress $LangflowAddress | Out-Null
 }
-Write-Output "Installed independent materials Worker at $root. Run packaging\materials\start.ps1."
+& "$PSScriptRoot\install-desktop.ps1" -BaseUrl $BaseUrl
+Write-Output "Installed independent materials Worker at $root. Open Worker8787.exe on the desktop to start it."
