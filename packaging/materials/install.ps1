@@ -3,12 +3,23 @@ param([ValidateRange(1,8)][int]$Slots = 5, [string]$LangflowAddress)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $snapshot = Join-Path $repo 'deployments\worker8788'
+$port = 8787
+# These are the stable installation and task directories, including for an in-place upgrade.
 $root = 'C:\CodexRemoteWorker-AppServer-8790'
 $data = 'C:\CodexWorkerData-AppServer-8790'
 $python = 'C:\CodexRemoteWorker\.runtime\python313\python.exe'
 $mark = '.materials-worker'
-if (Get-NetTCPConnection -State Listen -LocalPort 8790 -ErrorAction SilentlyContinue) {
-    throw 'Port 8790 is already listening. Drain and stop only the materials instance before updating.'
+if (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue) {
+    throw "Port $port is already occupied. Check the owning process before installing the materials Worker."
+}
+$instanceLock = Join-Path $data '.materials.lock'
+if (Test-Path -LiteralPath $instanceLock) {
+    try {
+        $handle = [IO.File]::Open($instanceLock,'Open','ReadWrite','None')
+        $handle.Dispose()
+    } catch [IO.IOException] {
+        throw 'The materials data directory is in use. Drain and stop the existing materials instance before updating.'
+    }
 }
 $existing = @('C:\CodexRemoteWorker-AppServer-8789','C:\CodexRemoteWorker-AppServer-8788') |
     Where-Object { Test-Path -LiteralPath "$_\config.trial.json" } | Select-Object -First 1
@@ -53,7 +64,7 @@ if (!(Test-Path -LiteralPath $credential)) {
         ConvertTo-Json | Set-Content -LiteralPath $credential -Encoding utf8NoBOM
 }
 $cfg.protected_read_roots = @($cfg.protected_read_roots | Where-Object {$_}) + @($existingData,$root)
-$cfg.port = 8790
+$cfg.port = $port
 $cfg.bind_host = '0.0.0.0'
 $cfg.data_root = $data
 $cfg.max_concurrent_jobs = $Slots
@@ -79,17 +90,22 @@ Get-ChildItem -LiteralPath "$snapshot\source\src\codex_remote_worker" -Filter '*
     Copy-Item -Destination $package.FullName -Force
 $desktop = New-Item -Force -ItemType Directory -Path "$root\desktop"
 # Reuse the registered-package activation and service-account launcher used by 8789.
-$launch = [IO.File]::ReadAllText("$snapshot\runtime\launch-packaged-user.ps1").Replace('8788','8790')
+$launch = [IO.File]::ReadAllText("$snapshot\runtime\launch-packaged-user.ps1").Replace('C:\CodexRemoteWorker-AppServer-8788',$root)
 [IO.File]::WriteAllText("$root\launch-packaged-user.ps1",$launch)
-$start = [IO.File]::ReadAllText("$repo\packaging\worker8789\start-worker.ps1").Replace('8789','8790')
+$start = [IO.File]::ReadAllText("$repo\packaging\worker8789\start-worker.ps1")
+$start = $start.Replace('C:\CodexRemoteWorker-AppServer-8789',$root).Replace('C:\CodexWorkerData-AppServer-8789',$data).Replace('8789',[string]$port)
 [IO.File]::WriteAllText("$desktop\start-worker.ps1",$start)
 Copy-Item -LiteralPath "$PSScriptRoot\packaged-background.py" -Destination "$root\packaged-background.py" -Force
-if ($LangflowAddress) {
-    $rule = 'Codex-Materials-8790'
-    if (Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue) {
-        Set-NetFirewallRule -Name $rule -RemoteAddress $LangflowAddress | Out-Null
-    } else {
-        New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8790 -RemoteAddress $LangflowAddress | Out-Null
+$ruleName = "Codex-Materials-$port"
+$rules = @(Get-NetFirewallRule -Name @('Codex-Materials-8790', $ruleName) -ErrorAction SilentlyContinue)
+if ($rules.Count) {
+    foreach ($rule in $rules) {
+        $rule | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -Protocol TCP -LocalPort $port | Out-Null
+        if ($LangflowAddress) {
+            Set-NetFirewallRule -Name $rule.Name -RemoteAddress $LangflowAddress | Out-Null
+        }
     }
+} elseif ($LangflowAddress) {
+    New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -RemoteAddress $LangflowAddress | Out-Null
 }
 Write-Output "Installed independent materials Worker at $root. Run packaging\materials\start.ps1."

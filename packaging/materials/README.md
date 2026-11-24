@@ -4,7 +4,7 @@
 
 ## 在现有 Windows Worker 服务器部署
 
-在仓库的 `codex/materials-preprocess-worker` 分支，以管理员身份打开 PowerShell 7。安装器优先读取同机 8789 的现有运行配置，也支持仅安装 8788 的服务器。材料服务沿用该实例的 Codex 模型、登录和 Windows 服务账号，单独监听 8790 端口。安装目录为 `C:\CodexRemoteWorker-AppServer-8790`，材料任务数据在 `C:\CodexWorkerData-AppServer-8790`。默认支持五笔提交并行，同名项目的不同提交各自拥有任务号、文件目录和会话。
+在仓库的 `codex/materials-preprocess-worker` 分支，以管理员身份打开 PowerShell 7。安装器优先读取同机 8789 的现有运行配置，也支持仅安装 8788 的服务器。材料服务沿用该实例的 Codex 模型、登录和 Windows 服务账号，监听 TCP **8787**。安装器沿用原安装目录 `C:\CodexRemoteWorker-AppServer-8790` 和数据目录 `C:\CodexWorkerData-AppServer-8790`，升级时继续使用已有令牌和任务库。默认支持五笔提交并行，同名项目的不同提交各自拥有任务号、文件目录和会话。
 
 可以为本分支单独签出一个目录。
 
@@ -13,9 +13,9 @@ git clone --single-branch --branch codex/materials-preprocess-worker https://git
 Set-Location codex-worker-materials
 ~~~
 
-1. 安装 LibreOffice，以便转写旧版 Word 和渲染原件页图。标准安装位置会被自动识别，自定义位置可设置 `MATERIALS_SOFFICE` 指向 `soffice.com`。安装器使用 uv、系统 Python 启动器或现有 Python 的 pip 将附加依赖装到 8790 专属目录。
-2. 执行以下命令。`-LangflowAddress` 可以传 Langflow 的实际出口 IP 或网段，用于配置该来源到 8790 的 Windows 防火墙规则。使用已有反向代理或已有放行规则时可省略此项。公网安全组如适用，也需要允许 Langflow 到达配置的 Worker 地址。
-3. 将专用令牌填入 Langflow 的“项目材料 Worker”节点并保存。也可以在 Langflow 服务环境设置 `MATERIALS_WORKER_TOKEN`。已部署画布使用同一开发服务器的 8790 地址，另一个部署地址可通过 Langflow 环境变量 `MATERIALS_WORKER_URL` 指定。通过 HTTPS 代理提供服务时填写代理地址。
+1. 安装 LibreOffice，以便转写旧版 Word 和渲染原件页图。标准安装位置会被自动识别，自定义位置可设置 `MATERIALS_SOFFICE` 指向 `soffice.com`。安装器使用 uv、系统 Python 启动器或现有 Python 的 pip 将附加依赖装到材料服务目录。
+2. 执行以下命令。升级已运行的旧版时，等材料任务结束并停止旧材料实例后再安装。服务器上的 TCP 8787 需可用。安装器会把自己管理的已有 Windows 防火墙规则迁至 8787，沿用原放行来源。首次配置可用 `-LangflowAddress` 指定 Langflow 的实际出口 IP 或网段。若使用云安全组，允许该来源访问 8787。若使用反向代理，将材料请求转发至该端口。
+3. 将专用令牌填入 Langflow 的“项目材料 Worker”节点并保存。也可以在 Langflow 服务环境设置 `MATERIALS_WORKER_TOKEN`。已部署画布默认直连开发服务器的 8787 端口。若用 `MATERIALS_WORKER_URL` 覆盖地址，请将直连 URL 的端口配置为 8787，使用 HTTPS 反向代理时填写代理地址。
 
 ~~~powershell
 .\packaging\materials\install.ps1 -Slots 5
