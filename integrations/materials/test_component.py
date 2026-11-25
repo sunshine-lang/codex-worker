@@ -1,6 +1,7 @@
 """Gateway configuration tests. Run in a Langflow environment."""
 import asyncio
 import base64
+import hashlib
 from functools import partial
 import json
 from pathlib import Path
@@ -66,11 +67,12 @@ def test_export_shows_address_next_to_token():
     assert node["field_order"] == ["request", "worker_url", "worker_token"]
     assert node["template"]["worker_url"] == next(f.to_dict() for f in Gateway.inputs if f.name == "worker_url")
     assert node["template"]["code"]["value"] == (ROOT / "component.py").read_text()
+    assert node["metadata"]["code_hash"] == hashlib.sha256((ROOT / "component.py").read_bytes()).hexdigest()[:12]
     entry = next(n for n in graph["nodes"] if n["id"] == "ChatInput-Materials")
-    assert entry["data"]["node"]["template"]["files"]["fileTypes"] == list(component["UPLOAD_TYPES"])
+    assert "fileTypes" not in entry["data"]["node"]["template"]["files"]
 
 
-@pytest.mark.parametrize("filename", ["feedback.xlsx", "claims.PDF"])
+@pytest.mark.parametrize("filename", ["feedback.xlsx", "claims.PDF", "source.csv", "requirements.txt", "custom.data", "no_suffix"])
 def test_attachment_is_forwarded_verbatim_for_both_upload_paths(tmp_path, filename, monkeypatch):
     body = {"project_name":"example", "business_tag":"life sciences", "source_language":"en", "target_language":"zh"}
     scope = tmp_path / "current-flow"

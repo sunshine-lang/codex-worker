@@ -211,11 +211,11 @@ def test_slots_zero_files_and_validation(tmp_path):
         assert client.get(route, headers=AUTH).json()["channels"] == idle
         for d in ({"source_filename": "../a.docx", "content_base64": "Zg=="},
                   {"source_filename": "a.doc", "content_base64": "broken!"},
-                  {"source_filename": "a.exe", "content_base64": "Zg=="}):
+                  {"source_filename": "empty.data", "content_base64": ""}):
             assert client.post(ROUTE, headers=AUTH, json=request([d])).status_code == 422
 
 
-@pytest.mark.parametrize("filename", ["broken.docx", "broken.pdf"])
+@pytest.mark.parametrize("filename", ["broken.doc", "broken.docx", "broken.xlsx", "broken.pdf"])
 def test_corrupt_file_is_a_failed_task(tmp_path, filename):
     async def agent(_settings, _root, session):
         await asyncio.to_thread(session.call, "material_read", {"document": 0, "offset": 0})
@@ -303,7 +303,8 @@ def test_email_link_with_embedded_fallback_keeps_original_picture(tmp_path):
     assert "assets/media" not in standalone_markdown(target)
 
 
-def test_old_word_and_original_page(tmp_path):
+@pytest.mark.parametrize("label", ["source.doc", "source.unknown"])
+def test_old_word_and_original_page(tmp_path, label):
     require_pandoc()
     pytest.importorskip("pypdfium2")
     from codex_remote_worker.material_documents import office_convert, office_executable
@@ -314,6 +315,8 @@ def test_old_word_and_original_page(tmp_path):
     sample = tmp_path / "source.docx"
     sample.write_bytes(base64.b64decode(word("Legacy source line")["content_base64"]))
     source = office_convert(sample, tmp_path / "legacy", "doc")
+    if source.name != label:
+        source = source.rename(source.with_name(label))
     out = tmp_path / "prepared"
     assert "Legacy source line" in transcribe(source, out).read_text(encoding="utf-8")
     image, pages = page_preview(source, out, 1)

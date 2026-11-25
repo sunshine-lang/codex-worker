@@ -46,6 +46,7 @@ INSTRUCTIONS = f"""# 项目翻译材料预处理
 
 1. **逐份读完。** 对每个附件调用 `material_read(document, offset)`，首次取 `offset=0`。用返回的 `next_offset` 继续读取，直到其值为 `null`。需要核对前文时可回读。
 2. **按材料形式核对。** Word 按原文顺序阅读，留意章节、表格及客户修订。Excel 按工作表、行号、单元格和合并范围关联文字与截图。同一格中的多条意见、同一行的多张图分别核对，逐张读取批注和修订痕迹。
+   CSV 按记录和原始行号读取，保留单元格中的标识、标签和换行。纯文本按原有段落和顺序阅读。作为附件提交的 TXT 同样要逐份读取并纳入项目规则判断。
 3. **查看原页。** 遇到依赖图示、表格布局、格式或批注的要求，调用 `material_page(document, page)`。页码从 1 开始。PDF 首次读取返回的 `pages_to_view` 要逐页查看，包括扫描页和含图形或批注的页。其他页按需查看。字迹不清、无法判定的内容标为“待确认”。
 4. **确认材料用途。** 根据本单文字说明和文件内容，区分客户指南、工单说明、历史反馈及待译原文。材料同时承担几种用途时，按具体段落或条目判断。
 
@@ -146,8 +147,9 @@ class MaterialSession:
             if file_digest(source) != entry["sha256"]:
                 raise JobError("INPUT_CHANGED", "原始文档与提交时不一致。")
             transcribe(source, folder)
-            if source.suffix == ".pdf":
-                info = json.loads((folder / "pdf-pages.json").read_text(encoding="utf-8"))
+            pdf_pages = folder / "pdf-pages.json"
+            if pdf_pages.is_file():
+                info = json.loads(pdf_pages.read_text(encoding="utf-8"))
                 self.pending_pdf_pages.update((index, page) for page in info["visual_pages"])
             self.converted.add(index)
             self.update("reading_documents", "已保存原文 Markdown", filename)
@@ -174,7 +176,7 @@ class MaterialSession:
             self.update("generating_prompt", "材料已读完，正在综合项目翻译要求")
         value = {"source_filename": filename, "markdown": text[offset:end],
                  "next_offset": end if end < len(text) else None}
-        if source.suffix == ".pdf" and offset == 0:
+        if offset == 0 and (folder / "pdf-pages.json").is_file():
             value["pages_to_view"] = sorted(p for doc, p in self.pending_pdf_pages if doc == index)
         return [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]
 

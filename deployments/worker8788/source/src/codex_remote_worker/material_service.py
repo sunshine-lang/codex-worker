@@ -63,9 +63,6 @@ def accept(store, root, obj, capacity):
                 raise JobError("INVALID_DOCUMENT", "每份附件需要 source_filename。")
             name = safe_name(obj_doc["source_filename"])
             suffix = Path(name).suffix.lower()
-            if suffix[1:] not in DOCUMENT_TYPES:
-                supported = "、".join(kind.upper() for kind in DOCUMENT_TYPES)
-                raise JobError("UNSUPPORTED_DOCUMENT", f"支持 {supported} 原件：{name}")
             encoded = obj_doc.get("content_base64")
             if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_INPUT - total + 2) // 3):
                 raise JobError("INVALID_DOCUMENT", f"附件编码无效或过大：{name}")
@@ -76,7 +73,8 @@ def accept(store, root, obj, capacity):
             total += len(raw)
             if not raw or total > MAX_INPUT:
                 raise JobError("INVALID_DOCUMENT", f"附件为空或总量超过 32 MiB：{name}")
-            stored = f"{index:04d}{suffix}"
+            # Keep legacy storage names (and idempotency fingerprints); unfamiliar suffixes stay inert.
+            stored = f"{index:04d}" + (suffix if suffix[1:] in DOCUMENT_TYPES else ".input")
             (stage / "input" / stored).write_bytes(raw)
             manifest.append({"source_filename": name, "stored_name": stored, "sha256": digest(raw)})
         timestamp = now()
@@ -188,7 +186,8 @@ def create_material_app(settings, agent=run_agent):
     @app.get("/v1/ready")
     async def ready(include_channels: bool = False):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
-                  "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES}
+                  "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES,
+                  "format_detection": "content"}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():

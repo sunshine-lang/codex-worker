@@ -41,7 +41,8 @@ def xlsx_sample():
     return out.getvalue(), by_sheet_cell
 
 
-def test_original_xlsx_via_material_service_with_word(tmp_path):
+@pytest.mark.parametrize("word_name, sheet_name", [("材料.docx", "客户原表.xlsx"), ("指南.blob", "数据.pdf")])
+def test_original_xlsx_via_material_service_with_word(tmp_path, word_name, sheet_name):
     require_pandoc()
     raw, expected = xlsx_sample()
     async def agent(_settings, _folder, session):
@@ -51,7 +52,7 @@ def test_original_xlsx_via_material_service_with_word(tmp_path):
                 part = session.call("material_read", {"document": index, "offset": offset})
                 offset = json.loads(part[0]["text"])["next_offset"]
         return example_prompt("规则与所在行的截图一起读取。")
-    data = request([word("Style"), {"source_filename":"客户原表.xlsx",
+    data = request([word("Style", name=word_name), {"source_filename":sheet_name,
                                     "content_base64":base64.b64encode(raw).decode()}])
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
         assert "xlsx" in client.get("/v1/ready", headers=AUTH).json()["document_types"]
@@ -60,7 +61,7 @@ def test_original_xlsx_via_material_service_with_word(tmp_path):
         task = r.json()["task_id"]
         wait(client, task, "completed")
         out = client.get(f"{ROUTE}/{task}/result", headers=AUTH).json()["documents_markdown"]
-        assert [d["source_filename"] for d in out] == ["材料.docx", "客户原表.xlsx"]
+        assert [d["source_filename"] for d in out] == [word_name, sheet_name]
         md = out[1]["markdown"]
         assert "A2:A3" in md and "WO01" in md and "B2　0" in md and "=1+2" in md
         occurrences = []

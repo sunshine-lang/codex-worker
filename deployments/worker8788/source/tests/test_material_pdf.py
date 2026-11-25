@@ -18,7 +18,8 @@ SAMPLE = Path(__file__).parent / "fixtures" / "mixed-pages.pdf"
 PHRASE = "wherein the first member comprises <X>."
 
 
-def test_pdf_text_and_scan_through_material_service(tmp_path):
+@pytest.mark.parametrize("filename", ["测试.PDF", "指南.upload"])
+def test_pdf_text_and_scan_through_material_service(tmp_path, filename):
     prompt = example_prompt(PHRASE)
     previews = []
 
@@ -44,7 +45,7 @@ def test_pdf_text_and_scan_through_material_service(tmp_path):
                 assert session.reading_complete
         return session.prompt(json.dumps({"translation_prompt": prompt}))
 
-    doc = {"source_filename": "测试.PDF", "content_base64": base64.b64encode(SAMPLE.read_bytes()).decode()}
+    doc = {"source_filename": filename, "content_base64": base64.b64encode(SAMPLE.read_bytes()).decode()}
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
         assert "pdf" in client.get("/v1/ready", headers=AUTH).json()["document_types"]
         submitted = client.post(ROUTE, headers=AUTH, json=request([doc]))
@@ -72,8 +73,8 @@ def test_page_images_count_towards_delivery_limit(tmp_path, monkeypatch):
     assert failure.value.code == "LIMIT_EXCEEDED"
 
 
-def test_exported_chat_input_lists_the_worker_formats():
+def test_exported_chat_input_leaves_format_selection_to_the_worker():
     root = Path(__file__).resolve().parents[4]
     graph = json.loads((root / "integrations/materials/flow.json").read_text(encoding="utf-8"))["data"]
     chat = next(node for node in graph["nodes"] if node["id"] == "ChatInput-Materials")
-    assert chat["data"]["node"]["template"]["files"]["fileTypes"] == list(material_documents.DOCUMENT_TYPES)
+    assert "fileTypes" not in chat["data"]["node"]["template"]["files"]

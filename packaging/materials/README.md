@@ -1,6 +1,6 @@
 # 项目材料预处理 Worker
 
-这个服务将一次材料提交分配给一个执行位和一个 Codex 会话。输入可以没有附件，也可以包含一份或多份 Word、XLSX 和 PDF 原件。返回一份项目翻译 Prompt 和逐文件原文 Markdown。任务状态保存在材料服务自己的 SQLite 中。
+这个服务将一次材料提交分配给一个执行位和一个 Codex 会话。输入可以没有附件，也可以包含一份或多份项目原件，包括 Word、XLSX、CSV、PDF、TXT。返回一份项目翻译 Prompt 和逐文件原文 Markdown。任务状态保存在材料服务自己的 SQLite 中。
 
 ## 在现有 Windows Worker 服务器部署
 
@@ -33,18 +33,18 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 
 `install.ps1 -BaseUrl` 可指定控制台显示和复制的调用地址，默认是本机地址。主机重启后可再次双击 EXE。排队任务会继续调度，已发布的结果可用原任务号找回，中断的在途任务显示 `interrupted`，需要重新处理时使用新提交键。首次真实模型验收可用下文的材料提交。运行日志位于材料数据目录的 `serve.stderr.log`。
 
-## 更新 8787 以接收 PDF 原件
+## 更新 8787 以按内容读取附件
 
-1. 在材料分支的检出目录运行 `git pull --ff-only origin codex/materials-preprocess-worker`。等当前材料任务结束，停止 8787 材料实例，再运行上文的安装和启动命令。PDF 使用材料服务已有的 PDFium 依赖。
-2. 用材料令牌请求 `GET /v1/ready`。看到 `document_types` 包含 `pdf` 后，可以直接向 8787 提交原始 PDF。
-3. 通过 Langflow 调用时，在原画布同步材料网关代码，并在聊天输入节点的附件类型中加入 `pdf`。保存原有流程 ID、Worker 地址和令牌。当前画布允许选择 `doc`、`docx`、`xlsx` 和 `pdf`。[节点源码](../../integrations/materials/component.py) · [画布文件](../../integrations/materials/flow.json)
-4. 可以把 Word、原始 PDF 和 XLSX 放在同一笔 `documents` 里。取回结果后，逐份核对原文件名。PDF 应有连续的原页码和对应的内嵌页图，带文字层的页还应有可复制的原文。XLSX 应保留原行号和相关截图。旧版联调脚本如果在本机限制附件扩展名，可使用本分支的调用脚本。[调用脚本](../../integrations/materials/call.py)
+1. 在材料分支的检出目录运行 `git pull --ff-only origin codex/materials-preprocess-worker`。等待当前材料任务结束，停止 8787 后运行上面的安装和启动命令。安装器同时更新旧 Word 容器读取依赖 olefile。
+2. 用材料令牌请求 `GET /v1/ready`，确认 `format_detection` 为 `content`，`document_types` 中包括 `csv` 和 `txt`。上游只需提供原文件名与内容，文件后缀不作为提交白名单。
+3. 在原 Langflow 画布同步材料网关代码及聊天附件字段定义，保留原流程 ID、Worker 地址和令牌。网关读取已上传文件时继续核对路径所属用户或流程。[节点源码](../../integrations/materials/component.py) · [画布文件](../../integrations/materials/flow.json)
+4. 可将六类原件放在同一笔 `documents` 中。任务完成后应收到一个 `translation_prompt` 和六项 `documents_markdown`。CSV 可按原记录和物理行号复核，TXT 应保留正文及空行。无法读取的附件会在任务状态中标明原文件名和原因。旧联调客户端如仍在本机限制附件后缀，可使用仓库调用脚本。[调用脚本](../../integrations/materials/call.py)
 
 ## Langflow 与上游契约
 
 流程是请求输入 → 项目材料 Worker → 任务响应。可移植的画布在 [flow.json](../../integrations/materials/flow.json)，节点源码在 [component.py](../../integrations/materials/component.py)。导入新实例后，在第二个节点配置地址与令牌。运行入口使用 `POST /api/v1/run/<flow_id>`，以聊天输入传入序列化的业务 JSON，输出组件是 `ChatOutput-Materials`。
 
-以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件支持 `.doc`、`.docx`、`.xlsx` 和 `.pdf`，附件原始字节合计上限为 32 MiB。
+以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件按内容识别，附件原始字节合计上限为 32 MiB。
 
 ~~~json
 {
@@ -73,7 +73,7 @@ Worker 请求使用 `Authorization: Bearer <专用令牌>`。运行 Langflow 时
 
 ## 首次验收
 
-调用脚本使用 Python 标准库。先在本地设置 `MATERIALS_FLOW_URL` 为完整的 Langflow 运行入口；`LANGFLOW_API_KEY` 未设置时，脚本会隐藏输入。附件路径换成实际的 Word、XLSX 或 PDF 原件路径。
+调用脚本使用 Python 标准库。先在本地设置 `MATERIALS_FLOW_URL` 为完整的 Langflow 运行入口；`LANGFLOW_API_KEY` 未设置时，脚本会隐藏输入。附件路径换成实际项目原件路径。
 
 ~~~powershell
 python integrations/materials/call.py submit --project-name 西门子 --business-tag IM --source-language en --target-language zh-CN --requirements "设备手册" --document "EC通用准则.doc" --document "西门子指南.docx"

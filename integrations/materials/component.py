@@ -19,7 +19,6 @@ from lfx.utils.file_path_security import component_file_access_scopes, enforce_l
 # The deployment can pin its Worker here or set MATERIALS_WORKER_URL on Langflow.
 DEFAULT_WORKER_URL = ""
 MAX_INPUT_BYTES = 32 * 1024 * 1024
-UPLOAD_TYPES = ("doc", "docx", "xlsx", "pdf")
 
 
 class MaterialsGateway(Component):
@@ -65,8 +64,6 @@ class MaterialsGateway(Component):
         roots = [Path(storage.build_full_path(str(scope), "material-scope")).resolve().parent for scope in scopes if scope]
         if not any(path.is_relative_to(root) for root in roots) or not path.is_file():
             raise ValueError("请提交当前用户或流程已上传的文件。")
-        if path.suffix[1:].lower() not in UPLOAD_TYPES:
-            raise ValueError("此路径的文件类型不在聊天附件支持范围内。")
         return path
 
     def submission(self, obj, attachments):

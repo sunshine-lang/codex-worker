@@ -18,7 +18,7 @@ from lxml import etree
 
 from .common import JobError, write_json
 
-DOCUMENT_TYPES = ("doc", "docx", "xlsx", "pdf")
+DOCUMENT_TYPES = ("doc", "docx", "xlsx", "pdf", "csv", "txt")
 MAX_PACKAGE = 256 * 1024 * 1024
 MAX_DELIVERY = 96 * 1024 * 1024
 PDF_RENDER_LOCK = threading.Lock()
@@ -158,22 +158,62 @@ def transcribe_pdf(source, folder):
     return output
 
 
+def identify_source(source, folder):
+    """Use contents to select a binary reader and give Office a correctly named copy if needed."""
+    with source.open("rb") as stream:
+        header = stream.read(1024)
+    if header.removeprefix(b"\xef\xbb\xbf").lstrip(b" \t\r\n").startswith(b"%PDF-"):
+        suffix = ".pdf"
+    elif header.startswith(bytes.fromhex("d0cf11e0a1b11ae1")):
+        import olefile
+        try:
+            with olefile.OleFileIO(str(source)) as compound:
+                if compound.exists("EncryptedPackage"):
+                    raise JobError("INVALID_DOCUMENT", "Office 附件已加密，请提交可直接打开的副本。")
+                if compound.get_type("WordDocument") != olefile.STGTY_STREAM:
+                    raise JobError("UNSUPPORTED_DOCUMENT", "此复合文档没有可读取的 Word 正文。")
+        except (OSError, ValueError) as exc:
+            raise JobError("INVALID_DOCUMENT", "无法打开旧版 Office 附件。") from exc
+        suffix = ".doc"
+    elif header.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        try:
+            with zipfile.ZipFile(source) as package:
+                word = "word/document.xml" in package.NameToInfo
+                excel = "xl/workbook.xml" in package.NameToInfo
+                if word == excel:
+                    raise JobError("UNSUPPORTED_DOCUMENT", "无法从此封装识别可转写的 Word 或 Excel 正文。")
+                if word and any(path.lower().endswith("/vbaproject.bin") for path in package.NameToInfo):
+                    raise JobError("UNSUPPORTED_DOCUMENT", "含宏的 Word 附件请提供静态文档副本。")
+                suffix = ".docx" if word else ".xlsx"
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise JobError("INVALID_DOCUMENT", "Office 或 ZIP 附件的封装损坏。") from exc
+    elif source.suffix.lower() == ".doc":
+        raise JobError("INVALID_DOCUMENT", "文件缺少旧版 Word 的文档结构。")
+    else:
+        # Existing PDF/OOXML readers can validate files whose headers are nonstandard.
+        return source
+    if suffix == source.suffix.lower():
+        return source
+    typed = folder / ("detected" + suffix)
+    shutil.copyfile(source, typed)
+    return typed
+
+
 def transcribe(source, folder):
     folder.mkdir(parents=True, exist_ok=True)
+    source = identify_source(source, folder)
     suffix = source.suffix.lower()
     if suffix == ".pdf":
         return transcribe_pdf(source, folder)
     docx = source
     if suffix == ".doc":
-        with source.open("rb") as stream:
-            if stream.read(8) != bytes.fromhex("d0cf11e0a1b11ae1"):
-                raise JobError("INVALID_DOCUMENT", "文件不是有效的旧版 Word 文档。")
         docx = office_convert(source, folder / "converted", "docx")
     elif suffix == ".xlsx":
         from .material_spreadsheet import workbook_view
         docx = workbook_view(source, folder, MAX_PACKAGE, MAX_DELIVERY)
     elif suffix != ".docx":
-        raise JobError("UNSUPPORTED_DOCUMENT", "没有该文件类型的转写工具。")
+        from .material_text import text_markdown
+        return text_markdown(source, folder, MAX_DELIVERY)
     docx = checked_docx(docx, folder)
     output = folder / "source.md"
     run_converter([pandoc_executable(), "-f", "docx", "-t", "gfm", "--wrap=none",
@@ -189,6 +229,8 @@ def standalone_markdown(folder, remaining=MAX_DELIVERY):
     used = len(text.encode("utf-8"))
     if used > remaining:
         raise JobError("LIMIT_EXCEEDED", "Markdown 交付内容超过 96 MiB。")
+    if (folder / "text-source.json").is_file():
+        return text  # Source text may literally contain Markdown image and HTML src examples.
     def inline(match):
         nonlocal used
         path = (folder / unquote(match["path"])).resolve()
@@ -206,16 +248,19 @@ def standalone_markdown(folder, remaining=MAX_DELIVERY):
 
 
 def page_preview(source, folder, page):
-    if source.suffix.lower() == ".pdf":
-        count = json.loads((folder / "pdf-pages.json").read_text(encoding="utf-8"))["page_count"]
+    pdf_pages = folder / "pdf-pages.json"
+    if pdf_pages.is_file():
+        count = json.loads(pdf_pages.read_text(encoding="utf-8"))["page_count"]
         if type(page) is not int or not 1 <= page <= count:
             raise ValueError(f"页码应在 1 到 {count} 之间。")
         data = (folder / "assets" / f"page-{page:04d}.png").read_bytes()
         return "data:image/png;base64," + base64.b64encode(data).decode("ascii"), count
+    if (folder / "text-source.json").is_file():
+        raise ValueError("文本和 CSV 没有固定页码，请使用 material_read 按原文或记录读取。")
     import pypdfium2 as pdfium
-    docx = folder / "embedded.docx"
-    preview_source = folder / "spreadsheet.docx" if source.suffix.lower() == ".xlsx" else source
-    pdf = office_convert(docx if docx.exists() else preview_source, folder / "preview", "pdf")
+    views = ("embedded.docx", "spreadsheet.docx", "detected.docx", "detected.doc")
+    preview_source = next((folder / name for name in views if (folder / name).is_file()), source)
+    pdf = office_convert(preview_source, folder / "preview", "pdf")
     with PDF_RENDER_LOCK, pdfium.PdfDocument(str(pdf)) as document:
         if type(page) is not int or not 1 <= page <= len(document):
             raise ValueError(f"页码应在 1 到 {len(document)} 之间。")

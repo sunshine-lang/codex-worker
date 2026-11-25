@@ -1,4 +1,4 @@
-"""Call the three-node Langflow using local Word, XLSX or PDF attachments (standard library only)."""
+"""Call the three-node Langflow with local project attachments (standard library only)."""
 import argparse
 import base64
 import getpass
