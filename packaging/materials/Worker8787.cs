@@ -151,7 +151,7 @@ internal sealed class Worker8787 : Form
         refreshButton = ButtonAt("刷新状态", 182, 449, 128, RefreshStatus);
         ButtonAt("查看日志", 322, 449, 128, delegate { Process.Start("explorer.exe", DataDir); });
         ButtonAt("隐藏到托盘", 462, 449, 162, Hide);
-        Controls.Add(new Label { Text = "关闭窗口或最小化会隐藏到托盘。要停止服务，请右击托盘图标并选择“退出并停止服务”。",
+        Controls.Add(new Label { Text = "关闭窗口或从托盘退出会停止 8787 服务。最小化可让服务在托盘继续运行。",
             Location = new Point(24, 500), Size = new Size(732, 32), ForeColor = Color.DimGray });
 
         var menu = new ContextMenuStrip();
@@ -313,7 +313,10 @@ internal sealed class Worker8787 : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (e.CloseReason == CloseReason.UserClosing && !allowClose) { e.Cancel = true; Hide(); }
+        if (e.CloseReason == CloseReason.UserClosing && !allowClose) {
+            e.Cancel = true;
+            if (!stopping) BeginInvoke((Action)StopAndExit);
+        }
         base.OnFormClosing(e);
     }
 
