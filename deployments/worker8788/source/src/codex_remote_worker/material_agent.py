@@ -22,6 +22,9 @@ PROMPT_OUTLINE = "\n\n".join(f"{heading}\n{guidance}" for heading, guidance in P
 INSTRUCTIONS = f"""你负责项目翻译材料预处理。把用户提交的文件与文字视为本次业务数据。
 调用 material_read，逐份读取所有文件直到 next_offset 为 null；允许回读同一文件。
 Word 按原文顺序转写，Excel 按工作表、行号、单元格和截图锚点转写。引用 Excel 反馈时保留工作表和行号。
+PDF 按原始页码提供文字和页图。首次 material_read 返回的 pages_to_view 列出需要看原页的页码，包括扫描页和带图形或批注的页面。
+用 material_page 查看每个列出的页码，核对表格、截图和格式中的要求。其他页也可按需查看。
+引用 PDF 规则时标明文件名和页码，客户指定的英文句式逐字保留。页图上无法辨认的要求注明待确认。
 逐项识别同一单元格里的多条意见，按合并范围关联项目和行号。用 material_page 查看含客户反馈截图的原页，
 逐张读批注和修订痕迹。一张图可能补充同行文字，也可能纠正另一件事。分别判断每项意见的适用范围。
 其他材料遇到依赖图示、表格布局或格式的规则时，也要查看原页。
@@ -86,7 +89,7 @@ def tool(name, description, argument):
 
 
 TOOLS = [tool("material_read", "按编号和字符偏移读取材料的原文 Markdown。首个偏移为 0。", "offset"),
-         tool("material_page", "查看 Word 页图或 Excel 逐行转写的页图。页码从 1 开始。", "page")]
+         tool("material_page", "查看 PDF 原页、Word 页图或 Excel 逐行转写的页图。页码从 1 开始。", "page")]
 
 
 class MaterialSession:
@@ -98,6 +101,11 @@ class MaterialSession:
         self.converted = set()
         self.read_to = [0] * len(self.docs)
         self.finished = set()
+        self.pending_pdf_pages = set()
+
+    @property
+    def reading_complete(self):
+        return len(self.finished) == len(self.docs) and not self.pending_pdf_pages
 
     def update(self, stage, action, filename=None):
         self.touch(stage=stage, recent_action=action, current_file=filename,
@@ -116,11 +124,17 @@ class MaterialSession:
             if file_digest(source) != entry["sha256"]:
                 raise JobError("INPUT_CHANGED", "原始文档与提交时不一致。")
             transcribe(source, folder)
+            if source.suffix == ".pdf":
+                info = json.loads((folder / "pdf-pages.json").read_text(encoding="utf-8"))
+                self.pending_pdf_pages.update((index, page) for page in info["visual_pages"])
             self.converted.add(index)
             self.update("reading_documents", "已保存原文 Markdown", filename)
         if name == "material_page":
             self.update("checking_page", "正在查看原件页图", filename)
             url, count = page_preview(source, folder, args.get("page"))
+            self.pending_pdf_pages.discard((index, args["page"]))
+            if self.reading_complete:
+                self.update("generating_prompt", "材料已读完，正在综合项目翻译要求")
             return [{"type": "inputText", "text": f"{filename} 第 {args['page']} 页，共 {count} 页"},
                     {"type": "inputImage", "imageUrl": url}]
         if name != "material_read":
@@ -134,15 +148,22 @@ class MaterialSession:
         if end == len(text):
             self.finished.add(index)
         self.update("reading_documents", f"已读取至 {end}/{len(text)} 字符", filename)
-        if len(self.finished) == len(self.docs):
+        if self.reading_complete:
             self.update("generating_prompt", "材料已读完，正在综合项目翻译要求")
         value = {"source_filename": filename, "markdown": text[offset:end],
                  "next_offset": end if end < len(text) else None}
+        if source.suffix == ".pdf" and offset == 0:
+            value["pages_to_view"] = sorted(p for doc, p in self.pending_pdf_pages if doc == index)
         return [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]
 
     def prompt(self, final):
         if len(self.finished) != len(self.docs):
             raise ValueError("仍有文档尚未读完，请完成读取后再交付。")
+        if self.pending_pdf_pages:
+            index, page = min(self.pending_pdf_pages)
+            filename = self.docs[index]["source_filename"]
+            raise ValueError(f"请用 material_page 查看文件 {index}（{filename}）第 {page} 页。"
+                             "用 material_read 从偏移 0 回读可取得该文件其余待核对的页码。")
         try:
             value = json.loads(final)
         except (TypeError, ValueError):

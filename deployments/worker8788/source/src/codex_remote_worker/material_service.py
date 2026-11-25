@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .common import JobError, canonical, digest, now, safe_name, write_json
 from .material_agent import MaterialSession, run_agent
-from .material_documents import MAX_DELIVERY, standalone_markdown
+from .material_documents import DOCUMENT_TYPES, MAX_DELIVERY, standalone_markdown
 from .store import InstanceLock, Store
 
 LOG = logging.getLogger(__name__)
@@ -63,8 +63,9 @@ def accept(store, root, obj, capacity):
                 raise JobError("INVALID_DOCUMENT", "每份附件需要 source_filename。")
             name = safe_name(obj_doc["source_filename"])
             suffix = Path(name).suffix.lower()
-            if suffix not in (".doc", ".docx", ".xlsx"):
-                raise JobError("UNSUPPORTED_DOCUMENT", f"支持 DOC、DOCX 和 XLSX 原件：{name}")
+            if suffix[1:] not in DOCUMENT_TYPES:
+                supported = "、".join(kind.upper() for kind in DOCUMENT_TYPES)
+                raise JobError("UNSUPPORTED_DOCUMENT", f"支持 {supported} 原件：{name}")
             encoded = obj_doc.get("content_base64")
             if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_INPUT - total + 2) // 3):
                 raise JobError("INVALID_DOCUMENT", f"附件编码无效或过大：{name}")
@@ -116,7 +117,7 @@ def create_material_app(settings, agent=run_agent):
                 touch(execution_slot=slot, recent_action="已取得执行通道")
                 async with asyncio.timeout(7200):
                     prompt = await agent(settings, folder, session)
-                if not isinstance(prompt, str) or not prompt.strip() or len(session.finished) != len(job["documents"]):
+                if not isinstance(prompt, str) or not prompt.strip() or not session.reading_complete:
                     raise JobError("INCOMPLETE_DELIVERY", "Prompt 或逐份原文核对尚未完成。")
                 session.update("validating_result", "正在核对并发布本次产物")
                 publication = asyncio.create_task(asyncio.to_thread(publish_result, folder, job, prompt))
@@ -187,7 +188,7 @@ def create_material_app(settings, agent=run_agent):
     @app.get("/v1/ready")
     async def ready(include_channels: bool = False):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
-                  "execution_slot_unit": "whole_submission", "document_types": ["doc", "docx", "xlsx"]}
+                  "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():

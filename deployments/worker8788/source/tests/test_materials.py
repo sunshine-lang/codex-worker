@@ -215,15 +215,16 @@ def test_slots_zero_files_and_validation(tmp_path):
             assert client.post(ROUTE, headers=AUTH, json=request([d])).status_code == 422
 
 
-def test_corrupt_file_is_a_failed_task(tmp_path):
+@pytest.mark.parametrize("filename", ["broken.docx", "broken.pdf"])
+def test_corrupt_file_is_a_failed_task(tmp_path, filename):
     async def agent(_settings, _root, session):
         await asyncio.to_thread(session.call, "material_read", {"document": 0, "offset": 0})
         raise AssertionError("corrupt document unexpectedly parsed")
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
-        data = request([{"source_filename": "broken.docx", "content_base64": "eHg="}])
+        data = request([{"source_filename": filename, "content_base64": "eHg="}])
         task = client.post(ROUTE, headers=AUTH, json=data).json()["task_id"]
         failed = wait(client, task, "failed")
-        assert failed["current_file"] == "broken.docx" and failed["error"]["code"] == "INVALID_DOCUMENT"
+        assert failed["current_file"] == filename and failed["error"]["code"] == "INVALID_DOCUMENT"
         assert client.get(f"{ROUTE}/{task}/result", headers=AUTH).status_code == 409
 
 

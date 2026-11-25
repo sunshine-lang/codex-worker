@@ -13,7 +13,8 @@ import pytest
 httpx = pytest.importorskip("httpx")
 pytest.importorskip("lfx")
 ROOT = Path(__file__).parent
-Gateway = runpy.run_path(str(ROOT / "component.py"))["MaterialsGateway"]
+component = runpy.run_path(str(ROOT / "component.py"))
+Gateway = component["MaterialsGateway"]
 TASK = "mat_" + "1" * 32
 
 
@@ -66,14 +67,28 @@ def test_export_shows_address_next_to_token():
     assert node["template"]["worker_url"] == next(f.to_dict() for f in Gateway.inputs if f.name == "worker_url")
     assert node["template"]["code"]["value"] == (ROOT / "component.py").read_text()
     entry = next(n for n in graph["nodes"] if n["id"] == "ChatInput-Materials")
-    assert "xlsx" in entry["data"]["node"]["template"]["files"]["fileTypes"]
+    assert entry["data"]["node"]["template"]["files"]["fileTypes"] == list(component["UPLOAD_TYPES"])
 
 
-def test_xlsx_is_forwarded_verbatim_for_both_upload_paths(tmp_path):
+@pytest.mark.parametrize("filename", ["feedback.xlsx", "claims.PDF"])
+def test_attachment_is_forwarded_verbatim_for_both_upload_paths(tmp_path, filename, monkeypatch):
     body = {"project_name":"example", "business_tag":"life sciences", "source_language":"en", "target_language":"zh"}
-    source = tmp_path / "feedback.xlsx"
-    source.write_bytes(b"sample workbook bytes")
+    scope = tmp_path / "current-flow"
+    scope.mkdir()
+    source = scope / filename
+    source.write_bytes(b"sample attachment bytes")
     doc = {"source_filename":source.name, "content_base64":base64.b64encode(source.read_bytes()).decode()}
-    gateway = SimpleNamespace(uploaded_file=lambda value: Path(value))
+    storage = SimpleNamespace(build_full_path=lambda owner, name: tmp_path / owner / name)
+    runtime = Gateway.uploaded_file.__globals__
+    monkeypatch.setitem(runtime, "component_file_access_scopes", lambda _: [scope.name])
+    monkeypatch.setitem(runtime, "enforce_local_file_access", lambda path, **_: path)
+    monkeypatch.setitem(runtime, "get_storage_service", lambda: storage)
+    gateway = SimpleNamespace()
+    gateway.uploaded_file = MethodType(Gateway.uploaded_file, gateway)
     assert Gateway.submission(gateway, {**body, "documents":[doc]}, [])["documents"] == [doc]
     assert Gateway.submission(gateway, body, [str(source)])["documents"] == [doc]
+    assert Gateway.submission(gateway, {**body, "documents":[{"file_path": str(source)}]}, [])["documents"] == [doc]
+    outside = tmp_path / filename
+    outside.write_bytes(b"other file")
+    with pytest.raises(ValueError, match="当前用户或流程"):
+        Gateway.submission(gateway, body, [str(outside)])

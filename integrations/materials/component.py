@@ -19,6 +19,7 @@ from lfx.utils.file_path_security import component_file_access_scopes, enforce_l
 # The deployment can pin its Worker here or set MATERIALS_WORKER_URL on Langflow.
 DEFAULT_WORKER_URL = ""
 MAX_INPUT_BYTES = 32 * 1024 * 1024
+UPLOAD_TYPES = ("doc", "docx", "xlsx", "pdf")
 
 
 class MaterialsGateway(Component):
@@ -62,8 +63,10 @@ class MaterialsGateway(Component):
         path = Path(enforce_local_file_access(path, scope_ids=scopes)).resolve()
         storage = get_storage_service()
         roots = [Path(storage.build_full_path(str(scope), "material-scope")).resolve().parent for scope in scopes if scope]
-        if not any(path.is_relative_to(root) for root in roots) or path.suffix.lower() not in (".doc", ".docx", ".xlsx"):
-            raise ValueError("请提交当前用户或流程已上传的 Word 或 XLSX 原件。")
+        if not any(path.is_relative_to(root) for root in roots) or not path.is_file():
+            raise ValueError("请提交当前用户或流程已上传的文件。")
+        if path.suffix[1:].lower() not in UPLOAD_TYPES:
+            raise ValueError("此路径的文件类型不在聊天附件支持范围内。")
         return path
 
     def submission(self, obj, attachments):
@@ -102,8 +105,8 @@ class MaterialsGateway(Component):
                     raw = base64.b64decode(encoded, validate=True)
                 except ValueError:
                     raise ValueError("附件不是有效的 Base64。") from None
-            if not isinstance(name, str) or Path(name).suffix.lower() not in (".doc", ".docx", ".xlsx"):
-                raise ValueError("附件需要带原文件名的 .doc、.docx 或 .xlsx。")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("每份附件需要原文件名。")
             if not raw:
                 raise ValueError(f"文件为空：{name}")
             size += len(raw)
