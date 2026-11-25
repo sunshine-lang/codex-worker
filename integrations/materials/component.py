@@ -62,8 +62,8 @@ class MaterialsGateway(Component):
         path = Path(enforce_local_file_access(path, scope_ids=scopes)).resolve()
         storage = get_storage_service()
         roots = [Path(storage.build_full_path(str(scope), "material-scope")).resolve().parent for scope in scopes if scope]
-        if not any(path.is_relative_to(root) for root in roots) or path.suffix.lower() not in (".doc", ".docx"):
-            raise ValueError("请提交当前用户或流程已上传的 Word 原件。")
+        if not any(path.is_relative_to(root) for root in roots) or path.suffix.lower() not in (".doc", ".docx", ".xlsx"):
+            raise ValueError("请提交当前用户或流程已上传的 Word 或 XLSX 原件。")
         return path
 
     def submission(self, obj, attachments):
@@ -102,8 +102,8 @@ class MaterialsGateway(Component):
                     raw = base64.b64decode(encoded, validate=True)
                 except ValueError:
                     raise ValueError("附件不是有效的 Base64。") from None
-            if not isinstance(name, str) or Path(name).suffix.lower() not in (".doc", ".docx"):
-                raise ValueError("首版附件需要带原文件名的 .doc 或 .docx。")
+            if not isinstance(name, str) or Path(name).suffix.lower() not in (".doc", ".docx", ".xlsx"):
+                raise ValueError("附件需要带原文件名的 .doc、.docx 或 .xlsx。")
             if not raw:
                 raise ValueError(f"文件为空：{name}")
             size += len(raw)
@@ -164,7 +164,7 @@ class MaterialsGateway(Component):
         except (ValueError, TypeError) as exc:
             result = {"error": {"code": "INVALID_INPUT", "message": str(exc)}}
         except OSError:
-            result = {"error": {"code": "FILE_UNAVAILABLE", "message": "无法读取本次上传的 Word 附件。"}}
+            result = {"error": {"code": "FILE_UNAVAILABLE", "message": "无法读取本次上传的材料附件。"}}
         except httpx.RequestError:
             result = {"error": {"code": "WORKER_UNAVAILABLE", "message": "未收到材料 Worker 响应；提交时请用相同 submission_key 重试。"}}
         if key:

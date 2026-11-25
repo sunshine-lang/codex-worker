@@ -1,6 +1,6 @@
 # 项目材料预处理 Worker
 
-这个服务将一次材料提交分配给一个执行位和一个 Codex 会话。输入可以没有附件，也可以包含一份或多份 Word 原件。返回一份项目翻译 Prompt 和逐文件原文 Markdown。任务状态保存在材料服务自己的 SQLite 中。
+这个服务将一次材料提交分配给一个执行位和一个 Codex 会话。输入可以没有附件，也可以包含一份或多份 Word、Excel 原件。返回一份项目翻译 Prompt 和逐文件原文 Markdown。任务状态保存在材料服务自己的 SQLite 中。
 
 ## 在现有 Windows Worker 服务器部署
 
@@ -33,11 +33,19 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 
 `install.ps1 -BaseUrl` 可指定控制台显示和复制的调用地址，默认是本机地址。主机重启后可再次双击 EXE。排队任务会继续调度，已发布的结果可用原任务号找回，中断的在途任务显示 `interrupted`，需要重新处理时使用新提交键。首次真实模型验收可用下文的材料提交。运行日志位于材料数据目录的 `serve.stderr.log`。
 
+## 增加 Excel 支持的升级顺序
+
+在分支根目录拉取 `codex/materials-preprocess-worker`。等当前材料任务结束，停止材料实例后，用上面的安装和启动命令更新 **8787**。安装器会复制新的工作簿转写模块，并把 openpyxl、python-docx 等依赖安装到材料服务环境。
+
+1. 用材料令牌请求 `GET /v1/ready`，确认 `document_types` 含 `xlsx`。
+2. 再同步线上材料网关的 [component.py](../../integrations/materials/component.py)，并在聊天输入节点的附件类型中加入 `xlsx`。可用仓库的 [flow.json](../../integrations/materials/flow.json) 对照，保留该实例原来的 Worker 地址和令牌。
+3. 以原始 XLSX 作为 `documents` 的一项提交，等待完成后检查 `documents_markdown` 中的原文件名、行号和图片；Word 与 XLSX 可混合提交。
+
 ## Langflow 与上游契约
 
 流程是请求输入 → 项目材料 Worker → 任务响应。可移植的画布在 [flow.json](../../integrations/materials/flow.json)，节点源码在 [component.py](../../integrations/materials/component.py)。导入新实例后，在第二个节点配置地址与令牌。运行入口使用 `POST /api/v1/run/<flow_id>`，以聊天输入传入序列化的业务 JSON，输出组件是 `ChatOutput-Materials`。
 
-以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件支持 `.doc` 和 `.docx`，附件原始字节合计上限为 32 MiB。
+以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件支持 `.doc`、`.docx` 和 `.xlsx`，附件原始字节合计上限为 32 MiB。
 
 ~~~json
 {
@@ -66,7 +74,7 @@ Worker 请求使用 `Authorization: Bearer <专用令牌>`。运行 Langflow 时
 
 ## 首次验收
 
-调用脚本使用 Python 标准库。先在本地设置 `MATERIALS_FLOW_URL` 为完整的 Langflow 运行入口；`LANGFLOW_API_KEY` 未设置时，脚本会隐藏输入。两个本地 Word 路径换成实际路径。
+调用脚本使用 Python 标准库。先在本地设置 `MATERIALS_FLOW_URL` 为完整的 Langflow 运行入口；`LANGFLOW_API_KEY` 未设置时，脚本会隐藏输入。附件路径换成实际的 Word 或 XLSX 原件路径。
 
 ~~~powershell
 python integrations/materials/call.py submit --project-name 西门子 --business-tag IM --source-language en --target-language zh-CN --requirements "设备手册" --document "EC通用准则.doc" --document "西门子指南.docx"

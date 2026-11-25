@@ -114,6 +114,9 @@ def transcribe(source, folder):
             if stream.read(8) != bytes.fromhex("d0cf11e0a1b11ae1"):
                 raise JobError("INVALID_DOCUMENT", "文件不是有效的旧版 Word 文档。")
         docx = office_convert(source, folder / "converted", "docx")
+    if source.suffix.lower() == ".xlsx":
+        from .material_spreadsheet import workbook_view
+        docx = workbook_view(source, folder, MAX_PACKAGE, MAX_DELIVERY)
     docx = checked_docx(docx, folder)
     output = folder / "source.md"
     run_converter([pandoc_executable(), "-f", "docx", "-t", "gfm", "--wrap=none",
@@ -146,7 +149,8 @@ def standalone_markdown(folder, remaining=MAX_DELIVERY):
 def page_preview(source, folder, page):
     import pypdfium2 as pdfium
     docx = folder / "embedded.docx"
-    pdf = office_convert(docx if docx.exists() else source, folder / "preview", "pdf")
+    preview_source = folder / "spreadsheet.docx" if source.suffix.lower() == ".xlsx" else source
+    pdf = office_convert(docx if docx.exists() else preview_source, folder / "preview", "pdf")
     with PDF_RENDER_LOCK, pdfium.PdfDocument(str(pdf)) as document:
         if type(page) is not int or not 1 <= page <= len(document):
             raise ValueError(f"页码应在 1 到 {len(document)} 之间。")
