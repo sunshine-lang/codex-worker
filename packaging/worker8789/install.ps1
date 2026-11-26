@@ -37,7 +37,7 @@ foreach ($name in @('launch-packaged-user.ps1','packaged-background.py','worker-
     $contents = [IO.File]::ReadAllText((Join-Path $snapshot "runtime\$name")).Replace('8788','8789')
     [IO.File]::WriteAllText((Join-Path $root $name),$contents)
 }
-foreach ($name in @('start-worker.ps1','watchdog.ps1','settings8789.py','login.ps1')) {
+foreach ($name in @('start-worker.ps1','watchdog.ps1','watchdog-hidden.pyw','settings8789.py','login.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $desktop
 }
 $pwsh = (Get-Process -Id $PID).Path
@@ -76,9 +76,19 @@ if (!(Test-Path -LiteralPath $userExe) -or (Get-FileHash $exe).Hash -ne (Get-Fil
     Copy-Item -LiteralPath $exe -Destination $userExe
 }
 New-Item -ItemType File -Force -Path (Join-Path $root '.desktop-installed') | Out-Null
-$action = New-ScheduledTaskAction -Execute $pwsh -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "'+(Join-Path $desktop 'watchdog.ps1')+'"') -WorkingDirectory $desktop
+$pythonw = Join-Path $base '.runtime\python313\pythonw.exe'
+$watchdogArgs = '-I -B "' + (Join-Path $desktop 'watchdog-hidden.pyw') + '"'
+$action = New-ScheduledTaskAction -Execute $pythonw -Argument $watchdogArgs -WorkingDirectory $desktop
 $existing = Get-ScheduledTask -TaskName $recovery -ErrorAction SilentlyContinue
-if ($existing -and $existing.Actions.Arguments -ne $action.Arguments) { throw 'Recovery task name already in use.' }
+if ($existing) {
+    $previous = $existing.Actions[0]
+    $legacyArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + (Join-Path $desktop 'watchdog.ps1') + '"'
+    $legacy = [IO.Path]::GetFileName($previous.Execute) -eq 'pwsh.exe' -and $previous.Arguments -eq $legacyArgs
+    $current = $previous.Execute -eq $action.Execute -and $previous.Arguments -eq $watchdogArgs
+    if ($existing.Actions.Count -ne 1 -or $previous.WorkingDirectory -ne $desktop -or !($legacy -or $current)) {
+        throw 'Recovery task name already in use.'
+    }
+}
 # Desktop package activation requires an interactive Windows session on this host.
 $operatorName = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $onLogon = New-ScheduledTaskTrigger -AtLogOn -User $operatorName
