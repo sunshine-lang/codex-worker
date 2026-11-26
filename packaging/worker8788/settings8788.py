@@ -1,6 +1,7 @@
 """Local administrator-only configuration controller. Never exposes an HTTP settings endpoint."""
 from pathlib import Path
 import argparse
+from contextlib import ExitStack, closing
 import datetime
 import json
 import re
@@ -44,7 +45,8 @@ def replace_config(text,model,effort):
 def assert_idle(data=DATA):
     for table in ('tasks','jobs'):
         with sqlite3.connect((data/(table+'.sqlite3')).as_uri()+'?mode=ro',uri=True) as db:
-            if any(n and status not in TERMINAL for status,n in db.execute('select status,count(*) from '+table+' group by status')):
+            terminal = TERMINAL | {'stopped'} if table == 'tasks' else TERMINAL
+            if any(n and status not in terminal for status,n in db.execute('select status,count(*) from '+table+' group by status')):
                 raise ValueError('当前仍有未完成任务。请等待整单结束后再应用；本次未更改配置。')
 
 
@@ -100,6 +102,65 @@ def stop_owned():
         meta=json.loads(p.read_text(encoding='utf-8'))['process']
         if not meta['job_object'].startswith('Local\\CodexWorkerAppServer8788-') or not reconcile_process(meta):
             raise ValueError('无法确认 8788 执行通道已退出。')
+
+
+def tasks_can_run(db):
+    """A queued chain ending at a failed/stopped order survives a restart untouched."""
+    waiting = {}
+    for task_id, raw in db.execute("SELECT task_id, record FROM tasks WHERE status NOT IN ('completed','failed','stopped')"):
+        task = json.loads(raw)
+        if (task['status'] != 'queued' or not task.get('project_id') or task.get('session_job_id')
+                or task.get('stage') not in ('waiting_for_project_order', 'waiting_for_project_recovery')):
+            return True
+        waiting[task_id] = task
+    blocked = set()
+    for task_id in waiting:
+        path = set()
+        while task_id not in blocked:
+            if task_id in path:
+                return True
+            path.add(task_id)
+            task = waiting[task_id]
+            prior = db.execute('SELECT record FROM tasks WHERE task_id=?', (task.get('previous_project_task_id'),)).fetchone()
+            if not prior:
+                return True
+            prior = json.loads(prior[0])
+            if prior.get('current_attempt_id'):
+                latest = db.execute('SELECT record FROM tasks WHERE task_id=?', (prior['current_attempt_id'],)).fetchone()
+                if not latest:
+                    return True
+                prior = json.loads(latest[0])
+            if prior.get('project_id') != task['project_id']:
+                return True
+            if prior['status'] in ('failed', 'stopped'):
+                break
+            task_id = prior['task_id']
+            if task_id not in waiting:
+                return True
+        blocked.update(path)
+    return False
+
+
+def desktop_stop():
+    # Called with the launch lock held. Finish accepted orders before taking the
+    # final write locks, so a submission cannot slip between the check and stop.
+    marker = DATA / '.desktop-stopped'
+    while True:
+        with ExitStack() as locks:
+            for table in ('tasks', 'jobs'):
+                uri = (DATA / (table + '.sqlite3')).as_uri() + '?mode=rw'
+                db = locks.enter_context(closing(sqlite3.connect(uri, uri=True, timeout=10)))
+                db.execute('BEGIN IMMEDIATE')
+                busy = tasks_can_run(db) if table == 'tasks' else any(
+                    status not in TERMINAL for status, in db.execute('SELECT DISTINCT status FROM jobs'))
+                if busy:
+                    break
+            else:
+                marker.touch()
+                if (DATA / 'serve.process.json').exists():
+                    stop_owned()
+                return
+        time.sleep(1)
 
 
 def command(args,timeout=200):
@@ -208,9 +269,13 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--model');parser.add_argument('--effort')
     parser.add_argument('--describe',action='store_true');parser.add_argument('--source-signature')
     parser.add_argument('--channels',type=int)
+    parser.add_argument('--desktop-stop', action='store_true')
     args=parser.parse_args()
     try:
-        if args.describe:result=describe()
+        if args.desktop_stop:
+            desktop_stop()
+            result={}
+        elif args.describe:result=describe()
         else:result=apply(args.model,args.effort,args.channels,args.source_signature)
         print(json.dumps({'ok':True,**result},ensure_ascii=False))
     except Exception as exc:

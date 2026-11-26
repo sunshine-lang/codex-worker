@@ -101,6 +101,10 @@ class Settings(BaseModel):
             raise ValueError('tool read roots must be absolute, non-root directories')
         return [p.resolve() for p in values]
 
+    @property
+    def independent_whole_orders(self):
+        return self.continuous_project_session and self.port in (8788, 8789)
+
     def secret_values(self):
         secrets = [self.service_token.get_secret_value(), *(v.get_secret_value() for v in self.provider_env.values())]
         secrets.extend(credential_values(read_codex_config(self.codex_home)))

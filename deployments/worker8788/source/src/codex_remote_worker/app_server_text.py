@@ -259,6 +259,9 @@ class TextAppServerRunner(AppServerRunner):
                 'guides':{role:tools.path(entry['text_path']).read_text(encoding='utf-8') for role,entry in tools.meta['styles'].items()},
                 'project':self.project_session.overview(),
                 'request':self.project_controller.request()}
+            if self.project_session.task.get('project_id'):
+                payload['current_order'] = {'task_id':self.project_session.task['task_id'],
+                    'instructions':'This is the current order. Carry forward project translation decisions. Read, translate and review the current order using its tools. Row IDs and completion records from older orders do not identify rows in this order.'}
             message = json.dumps(payload, ensure_ascii=False)
             params = self.session_turn(thread_id, message, 'phase_complete')
             message = params['input'][0]['text']

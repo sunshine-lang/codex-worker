@@ -8,6 +8,25 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_restart_drains_runnable_but_allows_blocked_project_chain(controller):
+    with sqlite3.connect(':memory:') as db:
+        db.execute('CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, record TEXT)')
+        def put(task_id, status, **extra):
+            raw = dict(task_id=task_id, status=status, project_id='p', **extra)
+            db.execute('INSERT OR REPLACE INTO tasks VALUES(?,?,?)', (task_id,status,json.dumps(raw)))
+        put('b','stopped')
+        put('c','queued',stage='waiting_for_project_recovery',previous_project_task_id='b')
+        put('d','queued',stage='waiting_for_project_order',previous_project_task_id='c')
+        assert not controller.tasks_can_run(db)
+        put('b','stopped',current_attempt_id='b2')
+        put('b2','queued',stage='queued')
+        assert controller.tasks_can_run(db)
+        put('b2','completed')
+        assert controller.tasks_can_run(db)
+        put('b2','failed')
+        assert not controller.tasks_can_run(db)
+
+
 @pytest.fixture
 def controller(tmp_path,monkeypatch):
     path=Path(__file__).resolve().parents[4]/'packaging/worker8788/settings8788.py'

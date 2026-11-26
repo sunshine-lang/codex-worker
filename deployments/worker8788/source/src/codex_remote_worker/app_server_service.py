@@ -17,6 +17,7 @@ from .common import JobError, Redactor, write_json
 from .config import load_settings, read_codex_config
 from .doctor import verify
 from .sandbox_state import capture_sandbox_state, same_sandbox_state
+from .subscription import effective_config
 
 
 def trial_settings(path):
@@ -106,15 +107,18 @@ def build_app(settings):
                 except JobError as exc:
                     runner.blocked = exc.public()
                 except Exception:
-                    runner.blocked = {'code': 'APP_SERVER_START_FAILED', 'message': '8789 模型服务启动失败，请检查服务日志。'}
+                    runner.blocked = {'code': 'APP_SERVER_START_FAILED', 'message': f'{settings.port} 模型服务启动失败，请检查服务日志。'}
             await asyncio.sleep(5)
 
     @asynccontextmanager
     async def lifespan(app):
         pending_login = None
         try:
-            if settings.port == 8789:
-                runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': '正在等待 8789 的模型连接就绪。'}
+            uses_subscription = settings.authentication_mode == 'chatgpt' or (
+                settings.authentication_mode == 'codex_auto'
+                and effective_config(settings).get('model_provider', 'openai') == 'openai')
+            if settings.port == 8789 or (settings.port == 8788 and uses_subscription):
+                runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': f'正在等待 {settings.port} 的模型连接就绪。'}
                 pending_login = asyncio.create_task(start_after_login())
             else:
                 await runner.start()
