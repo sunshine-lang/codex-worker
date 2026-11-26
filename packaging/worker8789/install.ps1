@@ -30,10 +30,9 @@ if (Test-Path -LiteralPath $root) {
 }
 & (Join-Path $PSScriptRoot 'initialize-data.ps1')
 New-Item -ItemType Directory -Force -Path $desktop | Out-Null
-$pkg = Join-Path $root 'src\codex_remote_worker'
-New-Item -ItemType Directory -Force -Path $pkg | Out-Null
-Get-ChildItem -LiteralPath (Join-Path $snapshot 'source\src\codex_remote_worker') -Filter '*.py' -File |
-    ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination $pkg}
+# Stage the development-only runtime from the synchronized repository source.
+$python = Join-Path $base '.runtime\python313\python.exe'
+& (Join-Path $PSScriptRoot 'stage-and-swap.ps1') -Python $python -PrepareAndInstall
 foreach ($name in @('launch-packaged-user.ps1','packaged-background.py','worker-app-server.py')) {
     $contents = [IO.File]::ReadAllText((Join-Path $snapshot "runtime\$name")).Replace('8788','8789')
     [IO.File]::WriteAllText((Join-Path $root $name),$contents)

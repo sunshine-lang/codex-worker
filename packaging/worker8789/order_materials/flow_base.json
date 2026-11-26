@@ -1,0 +1,14 @@
+{
+  "CustomComponent-MVPInputs.py": {
+    "before": "69fdcf946252f36a4d20e22ef0396cbe2f1b5f032d0e91e9b99b59c412f60aff",
+    "template": "dc921ed36fbb7c9b9ef3b9acf13c428ee2fae9505e85d068d82e967f4d53f67f"
+  },
+  "CustomComponent-MVPSubmit.py": {
+    "before": "97005def1381fb95c61635f538298daaca23f8e50ca5f6896500d2040fa4eb7b",
+    "template": "d9e60031a41167c7ed329cfee2cf2529362179f394eb2dcce9028954cf673d6e"
+  },
+  "CustomComponent-MVPQuery.py": {
+    "before": "f5bdfe399c3abb33a84c385d73fc7cb67ed343b41f020f2c0001de9acc801509",
+    "template": "67f17aca4c9ae12fd34d6a3241d32a991f037a15b20e2c46b2a721b97381138c"
+  }
+}

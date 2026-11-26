@@ -1,0 +1,615 @@
+--- a/app_server_runner.py
++++ b/app_server_runner.py
+@@ -247,7 +247,7 @@
+             error_path = root / 'logs/stderr.log'
+             try:
+                 resume = job.get('project_resume')
+-                project_id = session.task.get('project_id') if session is not None and self.settings.port == 8788 else None
++                project_id = session.task.get('project_id') if session is not None and self.settings.port == 8789 else None
+                 workspace = root
+                 start_parameters = self.thread_parameters(root)
+                 parent_thread = None
+@@ -269,11 +269,11 @@
+                     parameters = {k:v for k,v in start_parameters.items() if k in {
+                         'approvalPolicy','permissions','config','cwd','developerInstructions','runtimeWorkspaceRoots'}}
+                     parameters.update(threadId=expected_thread, excludeTurns=True)
+-                    if self.settings.port == 8788 and start_parameters.get('environments') == []:
++                    if self.settings.port == 8789 and start_parameters.get('environments') == []:
+                         # Translation guides are delivered by the host with every order. Native resume
+                         # otherwise tries to discover AGENTS.md in a default local environment.
+                         parameters['config'] = {**parameters['config'], 'project_doc_max_bytes': 0}
+-                    elif self.settings.port != 8788:
++                    elif self.settings.port != 8789:
+                         parameters.update({k:start_parameters[k] for k in ('environments','selectedCapabilityRoots') if k in start_parameters})
+                     if project_id:
+                         stored = (await rpc.request('thread/read', {'threadId':expected_thread, 'includeTurns':False}))['thread']
+@@ -480,7 +480,7 @@
+                     try:
+                         result = await self._finish_thread(thread_id, turn_id, terminal, queue)
+                     except Exception as exc:
+-                        if self.settings.port in (8788, 8789):
++                        if self.settings.port == 8789:
+                             raise JobError('PROCESS_CLEANUP_FAILED', '无法确认执行通道清理完成。') from exc
+                         raise
+                     execution.update(runtime_cleanup=result, ended_at=now())
+--- a/app_server_service.py
++++ b/app_server_service.py
+@@ -1,4 +1,4 @@
+-"""Isolated port-8788 entrypoint. Reuses baseline credentials in memory only."""
++"""Isolated 8789 development entrypoint."""
+ from __future__ import annotations
+
+ import argparse
+@@ -33,62 +33,7 @@
+                 or settings.max_concurrent_jobs != 5 or settings.task_batch_concurrency != 1):
+             raise ValueError('8789 requires five whole-order slots and one job per order')
+         return settings
+-    required = {'baseline_root', 'data_root', 'port', 'bind_host', 'codex_executable', 'expected_codex_version'}
+-    if not required <= set(overrides) or set(overrides) - required - {'max_concurrent_jobs', 'task_batch_concurrency', 'authentication_mode', 'codex_home', 'project_context_enabled', 'continuous_project_session'}:
+-        raise ValueError('Unknown trial configuration fields')
+-    project_context = overrides.get('project_context_enabled', False)
+-    if type(project_context) is not bool:
+-        raise ValueError('project_context_enabled must be boolean')
+-    continuous = overrides.get('continuous_project_session', False)
+-    if type(continuous) is not bool or (continuous and not project_context):
+-        raise ValueError('continuous_project_session requires project_context_enabled')
+-    jobs = overrides.get('max_concurrent_jobs', 1)
+-    batches = overrides.get('task_batch_concurrency', 1)
+-    if type(jobs) is not int or type(batches) is not int or not 1 <= batches <= jobs <= 8:
+-        raise ValueError('8788 concurrency must be bounded to one through eight')
+-    original = Path(overrides['baseline_root']).resolve(strict=True)
+-    base_path = original / 'config.local.json'
+-    config = json.loads(base_path.read_text(encoding='utf-8-sig'))
+-    original_data = Path(config['data_root']).resolve(strict=True)
+-    settings = load_settings(base_path, original_data / 'private/credentials.local.json')
+-    data = Path(overrides['data_root'])
+-    if not data.is_absolute() or data.resolve().is_relative_to(original_data) or original_data.is_relative_to(data.resolve()):
+-        raise ValueError('Trial data must be independent from original data')
+-    if overrides['port'] != 8788 or overrides['bind_host'] not in ('127.0.0.1', '0.0.0.0'):
+-        raise ValueError('This trial entrypoint is only for port 8788')
+-    executable = Path(overrides['codex_executable']).resolve(strict=True)
+-    if executable.suffix.lower() != '.exe':
+-        raise ValueError('Native Codex executable required')
+-    authentication = overrides.get('authentication_mode', settings.authentication_mode)
+-    if authentication not in ('server_codex', 'chatgpt', 'codex_auto'):
+-        raise ValueError('Unknown authentication mode')
+-    home = settings.codex_home
+-    if authentication in ('chatgpt', 'codex_auto'):
+-        home = Path(overrides.get('codex_home', ''))
+-        if not home.is_absolute() or home.resolve() != (data.resolve() / 'private/codex-home').resolve():
+-            raise ValueError('8788 subscription requires its own private Codex home')
+-        home = home.resolve(strict=True)
+-    elif 'codex_home' in overrides:
+-        raise ValueError('Codex home override requires subscription mode')
+-    provider_env = {}
+-    if authentication == 'codex_auto':
+-        env_path = home / 'provider-env.json'
+-        if env_path.is_file():
+-            from pydantic import SecretStr
+-            from .config import provider_env_names
+-            allowed = provider_env_names(read_codex_config(home))
+-            provider_env = {k: SecretStr(v) for k,v in json.loads(env_path.read_text()).items() if k in allowed}
+-    settings = settings.model_copy(update={'data_root': data.resolve(), 'port': 8788,
+-        'authentication_mode': authentication, 'codex_home': home,
+-        'provider_env': provider_env if authentication in ('chatgpt', 'codex_auto') else settings.provider_env,
+-        'codex_executable': executable, 'expected_codex_version': overrides['expected_codex_version'],
+-        'tool_read_roots': list(dict.fromkeys([*settings.tool_read_roots, executable.parent])),
+-        'bind_host': overrides['bind_host'],
+-        'max_concurrent_jobs': jobs, 'task_batch_concurrency': 1 if project_context else batches,
+-        'project_context_enabled': project_context,
+-        'continuous_project_session': continuous,
+-        'protected_read_roots': list(dict.fromkeys([*settings.protected_read_roots, original_data, settings.codex_home]))})
+-    return settings
++    raise ValueError('This development runtime accepts only the dedicated port 8789 configuration.')
+
+
+ def build_app(settings):
+@@ -114,14 +59,8 @@
+     async def lifespan(app):
+         pending_login = None
+         try:
+-            uses_subscription = settings.authentication_mode == 'chatgpt' or (
+-                settings.authentication_mode == 'codex_auto'
+-                and effective_config(settings).get('model_provider', 'openai') == 'openai')
+-            if settings.port == 8789 or (settings.port == 8788 and uses_subscription):
+-                runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': f'正在等待 {settings.port} 的模型连接就绪。'}
+-                pending_login = asyncio.create_task(start_after_login())
+-            else:
+-                await runner.start()
++            runner.blocked = {'code': 'CHATGPT_LOGIN_REQUIRED', 'message': '正在等待 8789 的模型连接就绪。'}
++            pending_login = asyncio.create_task(start_after_login())
+             async with baseline_lifespan(app):
+                 yield
+         finally:
+--- a/app_server_text.py
++++ b/app_server_text.py
+@@ -7,6 +7,7 @@
+ import subprocess
+ import uuid
+
++from . import worker_materials as order_materials
+ from . import __version__
+ from .app_server_runner import AppServerRunner, thread_parameters, verify_thread
+ from .common import JobError, digest, now, write_json
+@@ -256,12 +257,22 @@
+         if self.project_session is not None:
+             tools = TaskTools(root / 'work/.worker/manifest.json')
+             payload = {'uploaded_prompt':prompt.decode('utf-8-sig'),
+-                'guides':{role:tools.path(entry['text_path']).read_text(encoding='utf-8') for role,entry in tools.meta['styles'].items()},
++                'guides':({} if order_materials.order_has_materials(self.project_session.task['inputs']) else
++                         {role:tools.path(entry['text_path']).read_text(encoding='utf-8') for role,entry in tools.meta['styles'].items()}),
+                 'project':self.project_session.overview(),
+                 'request':self.project_controller.request()}
+             if self.project_session.task.get('project_id'):
+                 payload['current_order'] = {'task_id':self.project_session.task['task_id'],
+                     'instructions':'This is the current order. Carry forward project translation decisions. Read, translate and review the current order using its tools. Row IDs and completion records from older orders do not identify rows in this order.'}
++            if order_materials.order_has_materials(self.project_session.task['inputs']):
++                payload['current_order_materials'] = order_materials.material_fields(self.project_session.task)
++                payload['task_id'] = self.project_session.task['task_id']
++                payload['material_instructions'] = (
++                    'This new order has its own authoritative material snapshot. Use its uploaded prompt and '
++                    'current filenames. First open the changed_reference_files with project_read guides, using the exact '
++                    'filename; use other current guides as needed. Removed files no longer apply. This order supersedes earlier guides and old TM where inconsistent. '
++                    'References can be paged with char_offset. Preserve the project conversation, '
++                    'but do not reuse superseded instructions or translations from an earlier order.')
+             message = json.dumps(payload, ensure_ascii=False)
+             params = self.session_turn(thread_id, message, 'phase_complete')
+             message = params['input'][0]['text']
+--- a/config.py
++++ b/config.py
+@@ -103,7 +103,7 @@
+
+     @property
+     def independent_whole_orders(self):
+-        return self.continuous_project_session and self.port in (8788, 8789)
++        return self.continuous_project_session and self.port == 8789
+
+     def secret_values(self):
+         secrets = [self.service_token.get_secret_value(), *(v.get_secret_value() for v in self.provider_env.values())]
+--- a/project_activity.py
++++ b/project_activity.py
+@@ -24,7 +24,10 @@
+     event = {'seq': len(session.calls) + 1, 'at': at, 'actor': 'agent', 'tool': tool}
+     if tool == 'project_read':
+         op = args['operation']
+-        if op == 'guides':
++        if op == 'guides' and result.get('format') == 'markdown_text':
++            event.update(document_role='submission_material', file_name=result['filename'], sha256=result['sha256'])
++            action, message = 'read_document', '已查阅 '+result['filename']
++        elif op == 'guides':
+             role = {'prompt': 'prompt_file', 'project_style': 'project_style',
+                     'general_style': 'general_style'}[args['query']]
+             event['document_role'] = role
+--- a/project_archive.py
++++ b/project_archive.py
+@@ -108,7 +108,7 @@
+             return relative  # A late submission-registration callback cannot erase terminal state.
+     inputs = directory(base, target / 'input')
+     for role, entry in job['inputs'].items():
+-        if role not in ROLES:
++        if role not in ROLES and not re.fullmatch(r'ref_[0-9]{4}', role):
+             raise JobError('INVALID_PROJECT_INPUT', '未知的归档输入角色。')
+         source = root / 'input' / entry['filename']
+         save(base, inputs / (role + source.suffix.lower()), verified_bytes(root, source, entry), raw=True)
+--- a/project_controller.py
++++ b/project_controller.py
+@@ -50,7 +50,7 @@
+             'when there are none. Only end when the entire project is translated and self-reviewed.'
+             if s.phase == 'translating' else
+             'Autonomously self-review ALL CURRENT source/translation entries in the project against the original prompt, '
+-            'both guides, meaning, omissions, TB/TM, quantities, codes and placeholders. Correct errors '
++            'the current project guides, meaning, omissions, TB/TM, quantities, codes and placeholders. Correct errors '
+             'with project_write, re-read changed versions and acknowledge with project_review. Include '
+             'any remaining semantic findings in project_review.issues, or [] if there are none. '
+             'Do not approve unread versions. Choose whether to read all entries at once or selected ranges '
+--- a/project_recovery.py
++++ b/project_recovery.py
+@@ -21,7 +21,7 @@
+
+ def interruption_key(job):
+     incident = ':'.join((job['job_id'], job['started_at'], job['completed_at']))
+-    return str(uuid.uuid5(uuid.NAMESPACE_URL, '8788:auto-resume:'+incident))
++    return str(uuid.uuid5(uuid.NAMESPACE_URL, '8789:auto-resume:'+incident))
+
+
+ def reconciled_after_restart(job):
+@@ -29,7 +29,7 @@
+     return bool(service_interruption(job) and proof.get('verified_at') and job.get('started_at')
+                 and proof.get('started_at') == job['started_at'] and proof.get('process') == process
+                 and process.get('pid') and process.get('created_at')
+-                and re.fullmatch(r'Local\\CodexWorkerAppServer8788-[0-9a-f]{32}', process.get('job_object', '')))
++                and re.fullmatch(r'Local\\CodexWorkerAppServer8789-[0-9a-f]{32}', process.get('job_object', '')))
+
+
+ def queue_resume(settings, task_id, *, recovery_key=None, waiting_task_id=None):
+@@ -40,8 +40,8 @@
+     operation = uuid.uuid4().hex
+     online = recovery_key is not None
+     if online:
+-        if settings.port != 8788 or marker.exists():
+-            raise JobError('MAINTENANCE', '8788 维护结束后再恢复此单。', 503)
++        if settings.port != 8789 or marker.exists():
++            raise JobError('MAINTENANCE', '8789 维护结束后再恢复此单。', 503)
+     else:
+         with marker.open('x', encoding='utf-8') as stream:
+             json.dump({'operation':operation, 'reason':'explicit checkpoint resume', 'task_id':task_id}, stream)
+--- a/project_session.py
++++ b/project_session.py
+@@ -10,6 +10,7 @@
+ import re
+ import sqlite3
+
++from . import worker_materials as order_materials
+ from .common import JobError, canonical, digest, file_digest, now, write_json
+ from .contextual_tm import CONTEXTUAL_TM, resolve_tm_choice
+ from .json_delivery import check_json_result, load_json
+@@ -30,7 +31,7 @@
+ TOOLS = [
+     {'type': 'function', 'name': 'project_read', 'description':
+      'Read this entire project: overview shows progress and saved notes; guides retrieves the original prompt '
+-     'or either full guide (query=prompt/project_style/general_style), including after context compaction; source pages contain full original '
++     'or any current guide (query=the exact filename from overview.guide_queries), including after context compaction; source pages contain full original '
+      'records, TB/TM, and current translations; search finds wording in source and translations; checks returns '
+      'rule warnings and conflicting repeated sources. Choose any count, or count=0 for all remaining entries. '
+      'Choose char_limit=0 for full selected content, or a positive character page size. There is no automatic paging. '
+@@ -74,7 +75,7 @@
+
+ CONTEXTUAL_INSTRUCTIONS = '''Only rows marked locked_tm=true have been approved for direct reuse.
+ For each editable row compare ALL enabled 100% TM candidates against the current source, its role and neighboring
+-segments, the language pair, approved terms, protected content and both guides. Candidate order conveys no preference.
++segments, the language pair, approved terms, protected content and the current project guides. Candidate order conveys no preference.
+ Resolve repeated text consistently when its meaning and role match. Record your choice in each project_write row.
+ Use tm_decision.action=reuse with the selected candidate_id and target_text="" to copy that exact candidate.
+ Use adapt with its candidate_id and your corrected target_text when a reference partly applies.
+@@ -105,7 +106,7 @@
+ ''' + LEGACY_TM_INSTRUCTIONS + '''
+ Use project_read checks to examine rule warnings and repeated-source differences; judge these in context.
+ Save useful project decisions in notes so they survive conversation compaction. Use project_read guides
+-to retrieve the complete original prompt/project_style/general_style whenever needed, especially after
++to retrieve the complete original prompt and each guide listed in overview.guide_queries whenever needed, especially after
+ compaction; do not substitute a short summary for the actual rules. All saved rows remain
+ queryable. Autonomously complete the entire translation AND self-review in THIS SAME conversation. Keep using project
+ tools to read, save and revise all remaining rows; there is no fixed row quota per turn or tool call.
+@@ -203,7 +204,9 @@
+         # Re-read checks after resume; their content depends on every current translation.
+
+     def progress(self):
+-        return {'phase': self.phase, 'draft_segments': len(self.values),
++        materials = ({'read_reference_files': sorted(order_materials.guides_opened(self))}
++                     if order_materials.order_has_materials(self.task.get('inputs', {})) else {})
++        return {**materials, 'phase': self.phase, 'draft_segments': len(self.values),
+                 'reviewed_segments': sum(self.version(k) is not None and self.approved.get(k) == self.version(k)
+                     for k in map(str, range(len(self.records)))),
+                 'total_segments': len(self.records), 'model_required_segments': len(self.pending),
+@@ -248,7 +251,9 @@
+                     if self.approved.get(str(i)) != self.version(str(i)) or self.version(str(i)) is None), None),
+                 'notes': self.notes, 'review_note': self.review_note,
+                 'locked_tm_segments': len(self.plan['locked']),
+-                'guide_queries': ['prompt','project_style','general_style'],
++                'guide_queries': ([f['filename'] for f in order_materials.index_for(self.task['inputs'])]
++                                  if order_materials.order_has_materials(self.task.get('inputs', {})) else ['prompt','project_style','general_style']),
++                **order_materials.material_fields(self.task),
+                 'source_order': 'row_id is the zero-based original position; segment_id is preserved separately'}
+
+     def warnings(self, i):
+@@ -274,6 +279,8 @@
+         if op == 'overview':
+             value = self.overview()
+         elif op == 'guides':
++            if order_materials.order_has_materials(self.task.get('inputs', {})):
++                return order_materials.read_guide(self, args)
+             from .task_tools import TaskTools
+             if query == 'prompt':
+                 path = self.root/'input/prompt_file.md'
+@@ -358,6 +365,11 @@
+         ids = [r.get('row_id') for r in args['rows'] if isinstance(r,dict)]
+         if len(ids)!=len(args['rows']) or any(not isinstance(k,str) or k not in self.allowed for k in ids) or len(ids)!=len(set(ids)):
+             raise ValueError('Unknown, duplicate or locked row ID; no rows were saved.')
++        if ids and order_materials.order_has_materials(self.task.get('inputs', {})):
++            expected = set(order_materials.material_fields(self.task)['changed_reference_files'])
++            missing = expected - set(order_materials.guides_opened(self))
++            if missing:
++                raise ValueError('Read current order references with project_read guides before saving: '+', '.join(sorted(missing)))
+         if not set(ids) <= self.source_seen:
+             raise ValueError('Read the complete original source pages before translating these rows.')
+         rows = args['rows']
+--- a/task_runtime.py
++++ b/task_runtime.py
+@@ -5,6 +5,7 @@
+ import json
+ from pathlib import Path
+
++from . import worker_materials as order_materials
+ from . import task_tools
+ from .common import JobError, canonical, contained_file, digest, file_digest, now, write_json, atomic_write
+ from .windows import WindowsProcess
+@@ -24,8 +25,7 @@
+     write_json(directory / 'source.json', snapshot)
+     styles = {}
+     converter = file_digest(settings.doc_converter)
+-    for role in ('project_style', 'general_style'):
+-        entry = job['inputs'][role]
++    for role, entry in ([] if order_materials.order_has_materials(job['inputs']) else order_materials.guide_entries(job['inputs'])):
+         key = digest(canonical({'input': entry['sha256'], 'converter': converter, 'runtime': RUNTIME_VERSION,
+                                 'helper': digest(helper_source)}))
+         cached = settings.data_root / 'cache' / 'guide-text' / (key + '.json')
+--- a/task_tools.py
++++ b/task_tools.py
+@@ -120,7 +120,7 @@
+
+     def prepare(self):
+         result = {}
+-        for role in ('project_style', 'general_style'):
++        for role in self.meta['styles']:
+             self.step = 'prepare:' + role
+             entry = self.meta['styles'][role]
+             output = self.path(entry['text_path'])
+@@ -197,7 +197,7 @@
+     def read(self, role, offset=0, limit=200, max_output_bytes=READ_OUTPUT_BYTES, char_offset=0):
+         """Line pagination, with a character cursor for a single oversized line."""
+         budget = output_budget(max_output_bytes)
+-        if role not in ('project_style', 'general_style') or offset < 0 or limit < 1 or char_offset < 0:
++        if role not in self.meta['styles'] or offset < 0 or limit < 1 or char_offset < 0:
+             raise ValueError('Choose a guide, non-negative cursor and positive line limit')
+         with self.path(self.meta['styles'][role]['text_path']).open(encoding='utf-8-sig', newline='') as stream:
+             text = stream.read()
+@@ -291,7 +291,7 @@
+                 start = current['parts'][-1]['end_offset']
+                 if start < len(text):
+                     flush()
+-        for role in ('project_style', 'general_style'):
++        for role in self.meta['styles']:
+             with self.path(self.meta['styles'][role]['text_path']).open(encoding='utf-8-sig', newline='') as stream:
+                 add_text('guide', stream.read(), role=role)
+         for offset in range(0, len(self.snapshot['rows']), 100):
+--- a/translation_task_api.py
++++ b/translation_task_api.py
+@@ -11,6 +11,7 @@
+ from pydantic import Field, ValidationError
+ from starlette.datastructures import UploadFile
+
++from . import worker_materials as order_materials
+ from .common import JobError, ROLES
+ from .config import Options
+ from .contextual_tm import CONTEXTUAL_TM
+@@ -47,11 +48,14 @@
+
+     @router.get('/capabilities')
+     async def capabilities():
+-        return {**({'task_stop': True, 'same_name_parallel': settings.port != 8788} if settings.independent_whole_orders else {}),
++        return {**({'order_materials_contract':order_materials.MATERIALS_CONTRACT,
++                    'source_baseline_commit':order_materials.BASELINE_COMMIT}
++                   if settings.port == 8789 and settings.continuous_project_session else {}),
++                **({'task_stop': True, 'same_name_parallel': settings.port != 8789} if settings.independent_whole_orders else {}),
+                 **({'project_thread_continuity': 'source_file.project_name', 'explicit_project_id_supported': True,
+                     'strict_project_order': True, 'task_resume': True, 'replace_in_place': True,
+                     'auto_resume_interrupted_predecessor': True}
+-                   if settings.port == 8788 and settings.continuous_project_session else {}),
++                   if settings.port == 8789 and settings.continuous_project_session else {}),
+                 'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
+                 'tm_policies': [CONTEXTUAL_TM] if settings.continuous_project_session else [],
+                 'language_modes': [PER_SEGMENT],
+@@ -78,19 +82,19 @@
+         manager = app.state.translation_tasks
+         task_id, stage = manager.new_stage()
+         try:
+-            async with request.form(max_files=4, max_fields=1, max_part_size=64*1024) as form:
+-                items = list(form.multi_items())
+-                if len(items) != 5 or {k for k, _ in items} != {*ROLES, 'options'}:
+-                    raise JobError('INVALID_INPUT', '需要完整 JSON 文件、三份文档及 options。')
+-                if any(not isinstance(form[role], UploadFile) for role in ROLES) or not isinstance(form['options'], str):
+-                    raise JobError('INVALID_INPUT', '上传字段类型不正确。')
++            async with request.form(max_files=order_materials.MAX_REFERENCES+2, max_fields=1, max_part_size=64*1024) as form:
++                existing = manager.store.by_key(key)
++                files = order_materials.task_uploads(settings.port, form, existing)
+                 try:
+                     task_options = TranslationTaskOptions.model_validate_json(form['options'])
+                     options = Options(timeout_seconds=task_options.timeout_seconds)
+                 except ValidationError:
+                     raise JobError('INVALID_OPTIONS', '请检查 timeout_seconds、tm_policy、language_mode 和 project_id。') from None
+                 ensure_space(settings)
+-                manifest = await receive_files(settings, {role: form[role] for role in ROLES}, stage)
++                if files is None:
++                    manifest = await receive_files(settings, {role:form[role] for role in ROLES}, stage)
++                else:
++                    manifest = await order_materials.receive_order_files(settings, files, stage)
+                 if manager.store.by_key(key) is None:
+                     ready = await app.state.worker.ready()
+                     if not ready.get('ready'):
+@@ -124,7 +128,7 @@
+             task = await app.state.translation_tasks.request_stop(identifier(task_id))
+             return JSONResponse(public_task(task), status_code=202 if task['status'] == 'stopping' else 200)
+
+-    if settings.port == 8788 and settings.continuous_project_session:
++    if settings.port == 8789 and settings.continuous_project_session:
+         @router.post('/{task_id}/resume')
+         async def resume_task(task_id: str, request: Request):
+             try:
+--- a/translation_tasks.py
++++ b/translation_tasks.py
+@@ -13,6 +13,7 @@
+ import traceback
+ import uuid
+
++from . import worker_materials as order_materials
+ from .common import TERMINAL, JobError, Redactor, canonical, contained_file, digest, file_digest, now, write_json, accept_directory
+ from .config import Options
+ from .files import new_stage, prepare_record
+@@ -40,7 +41,7 @@
+             raise ValueError('Invalid server batch policy')
+
+
+-def plan_request(original, policy, *, tm_policy=None, language_mode=None):
++def plan_request(original, policy, *, tm_policy=None, language_mode=None, review_exact_tm=False):
+     if language_mode not in (None, PER_SEGMENT):
+         raise JobError('INVALID_LANGUAGE_MODE', '未知的订单语言模式。')
+     project = isinstance(original, dict) and 'source_text' not in original and ('segments' in original or 'project_name' in original)
+@@ -83,7 +84,7 @@
+         try:
+             if tm_policy == CONTEXTUAL_TM:
+                 row['tm_list'] = contextual_candidates(row)
+-                selection = contextual_auto(row)
++                selection = None if review_exact_tm else contextual_auto(row)
+                 if selection:
+                     terms = [{'source': t.get('source_surface') or t['source_text'], 'target': t['target_text']}
+                              for t in row['tb_list'] if t.get('enabled') is not False]
+@@ -323,7 +324,10 @@
+                       'auto_resuming':'前单正在自动续翻，交付后本单会开始。',
+                       'recovery_blocked':'前单未能自动续翻，请检查前单状态。'}.get(task.get('waiting_on_reason'), reason)
+             wait_fields = {'waiting_on_task_id':blocker,'waiting_on_status_path':f'/v1/tasks/{blocker}','wait_reason':reason}
+-    return {**tm_fields, **review_fields, **wait_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
++    timing = {'execution_window':task['execution_window']} if task.get('execution_window') else {}
++    if task['status'] == 'completed' and task.get('completed_at'):
++        timing['order_completed_at'] = task['completed_at']
++    return {**timing, **order_materials.material_fields(task), **tm_fields, **review_fields, **wait_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
+             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
+             **({'execution_slot': task['execution_slot']} if task.get('execution_slot') else {}),
+             'review_status': task.get('review_report_status', 'not_started'), 'result_kind': 'translation_candidate',
+@@ -384,14 +388,23 @@
+             raise JobError('INVALID_TASK_INPUT', '输入不是有效 UTF-8 JSON。') from exc
+         if tm_policy is not None and (tm_policy != CONTEXTUAL_TM or not self.settings.continuous_project_session):
+             raise JobError('TM_POLICY_UNAVAILABLE', '按语境处理 TM 需要支持该策略的整单会话 Worker。')
+-        plan = plan_request(original, self.policy, tm_policy=tm_policy, language_mode=language_mode)
++        named = order_materials.order_has_materials(manifest)
++        if named:
++            if not isinstance(original, dict) or not isinstance(original.get('project_name'), str) or not original['project_name'].strip():
++                raise JobError('PROJECT_REQUIRED', '随单资料需要具名项目和 segments。')
++            if self.settings.port != 8789 or not self.settings.continuous_project_session:
++                raise JobError('MATERIALS_UNAVAILABLE', '随单资料需要 8789 项目会话。')
++            tm_policy = tm_policy or CONTEXTUAL_TM
++            language_mode = language_mode or PER_SEGMENT
++        plan = plan_request(original, self.policy, tm_policy=tm_policy, language_mode=language_mode,
++                            review_exact_tm=named)
+         policy_fields = {k: plan[k] for k in ('tm_policy', 'language_mode') if k in plan}
+         if replaces_task_id:
+-            if self.settings.port != 8788 or not self.settings.continuous_project_session or not plan['project']:
+-                raise JobError('PROJECT_REQUIRED', '原位换稿需要 8788 的具名项目。', 409)
++            if self.settings.port != 8789 or not self.settings.continuous_project_session or not plan['project']:
++                raise JobError('PROJECT_REQUIRED', '原位换稿需要 8789 的具名项目。', 409)
+             policy_fields['replaces_task_id'] = replaces_task_id
+         if project_id is not None:
+-            if self.settings.port != 8788 or not self.settings.continuous_project_session:
++            if self.settings.port != 8789 or not self.settings.continuous_project_session:
+                 raise JobError('PROJECT_CONTINUITY_UNAVAILABLE', '此实例未启用跨单原对话续译。')
+             policy_fields['project_id'] = project_id
+         write_json(stage/'plan.json', plan)
+@@ -408,7 +421,7 @@
+                   'continuous_project_session': self.settings.continuous_project_session,
+                   'cursor': 0, 'batches': [{'indices': indices, 'job_id': None} for indices in plan['batches']], 'error': None}
+         name_key = None
+-        if self.settings.port == 8788 and self.settings.continuous_project_session and plan['project']:
++        if self.settings.port == 8789 and self.settings.continuous_project_session and plan['project']:
+             name_key = plan['project_name'].strip()
+         if replaces_task_id and not self.store.by_key(key):
+             old = self.store.get(replaces_task_id)
+@@ -476,8 +489,7 @@
+             else:
+                 (stage/'input/prompt_file.md').write_text(batch_prompt(prompt_path.read_text(encoding='utf-8-sig'), language_mode=plan.get('language_mode')), encoding='utf-8')
+             filenames = {'source_file': 'source_file.json', 'prompt_file': 'prompt_file.md'}
+-            for role in ('project_style', 'general_style'):
+-                entry = task['inputs'][role]
++            for role, entry in order_materials.guide_entries(task['inputs']):
+                 source = contained_file(root.resolve(), root/'input'/entry['filename'])
+                 if file_digest(source) != entry['sha256']:
+                     raise JobError('INPUT_CHANGED', '指南资料发生变化。')
+@@ -486,6 +498,8 @@
+             manifest = {role: {'filename': name, 'bytes': (stage/'input'/name).stat().st_size,
+                                'sha256': file_digest(stage/'input'/name)} for role, name in filenames.items()}
+             for role, entry in manifest.items():
++                if 'display_name' in task['inputs'][role]:
++                    entry['display_name'] = task['inputs'][role]['display_name']
+                 limit = min(self.settings.max_file_bytes, self.settings.max_prompt_bytes) if role=='prompt_file' else self.settings.max_file_bytes
+                 if not 0 < entry['bytes'] <= limit:
+                     raise JobError('BATCH_TOO_LARGE', '生成的批次资料超过 Worker 文件限制，请缩短单条原文、参考或 Prompt。')
+@@ -679,7 +693,7 @@
+         prior = self.store.project_predecessor(task) if 'project_parent_thread' not in task else None
+         if prior:
+             if prior['status'] != 'completed':
+-                if self.settings.port == 8788 and prior['status'] == 'failed' and (
++                if self.settings.port == 8789 and prior['status'] == 'failed' and (
+                         prior.get('error') or {}).get('code') in ('WORKER_RESTARTED', 'WORKER_STOPPED'):
+                     prior = await asyncio.to_thread(self._auto_resume_predecessor, prior, task['task_id'])
+                     if prior['status'] == 'queued':
+@@ -700,6 +714,8 @@
+                     self.store.save(task)
+                 return
+             # An all-TM order has no model turn of its own.
++            if order_materials.order_has_materials(task['inputs']):
++                task['material_changes'] = order_materials.reference_changes(task['inputs'], prior.get('inputs') or {})
+             thread = prior.get('codex_thread_id') or prior.get('project_parent_thread')
+             if prior['batches'] and not prior.get('codex_thread_id'):
+                 raise JobError('PROJECT_THREAD_MISSING', '已完成的前单缺少对话编号。')
+@@ -726,6 +742,8 @@
+             self.store.save(task)
+             self.worker.wakeup.set()
+         job = self.jobs.get(job_id)
++        if job.get('started_at'):
++            task['execution_window'] = {'job_id':job_id, 'started_at':job['started_at'], 'completed_at':job.get('completed_at')}
+         if self.settings.independent_whole_orders and job['status'] == 'queued':
+             task['status'] = 'queued'
+         execution = job.get('execution') or {}
+@@ -741,7 +759,7 @@
+         task['stage'] = {'reviewing':'project_self_review','complete':'delivery_check'}.get(progress.get('phase'), 'translating' if job['status']!='queued' else 'waiting_for_worker')
+         task['self_review_status'] = 'running' if progress.get('phase')=='reviewing' else 'not_started'
+         if job['status'] in ('failed','cancelled','interrupted'):
+-            if self.settings.port == 8788 and task.get('project_id'):
++            if self.settings.port == 8789 and task.get('project_id'):
+                 task['interruption_reason'] = 'service_interruption' if service_interruption(job) else 'translation_failure'
+             task.update(status='failed', stage='failed', error=job.get('error') or {
+                 'code':'PROJECT_SESSION_INTERRUPTED','message':'整单 Codex 会话已中止，草稿保留且未自动重跑。'})
+@@ -834,7 +852,7 @@
+                 task['project_parent_thread'] = thread
+             task.setdefault('previous_session_jobs', []).append(job_id)
+             task['session_attempt'] = task.get('session_attempt', 0) + 1
+-        for field in ('session_job_id', 'completed_at', 'execution_slot', 'session_progress', 'recent_actions', 'waiting_on_task_id'):
++        for field in ('session_job_id', 'completed_at', 'execution_slot', 'execution_window', 'session_progress', 'recent_actions', 'waiting_on_task_id'):
+             task.pop(field, None)
+         task.pop('interruption_reason', None)
+         task.pop('auto_recovery', None)
+@@ -845,7 +863,7 @@
+         self.store.save(task)
+
+     def _stop_terminal(self, task):
+-        if (self.settings.port == 8788 and task.get('project_id') and task['status'] == 'failed'
++        if (self.settings.port == 8789 and task.get('project_id') and task['status'] == 'failed'
+                 and (task.get('error') or {}).get('code') in ('WORKER_RESTARTED','WORKER_STOPPED')
+                 and not task.get('replaced_by_task_id')):
+             task.update(status='stopped', stage='stopped', interruption_reason='manual_stop', completed_at=now())
+@@ -872,7 +890,7 @@
+                         await self.advance(task)
+                         return self._stop_terminal(self.store.get(task_id))
+                 task.update(status='stopping', stage='stopping', error=None)
+-                if self.settings.port == 8788 and task.get('project_id'):
++                if self.settings.port == 8789 and task.get('project_id'):
+                     task['interruption_reason'] = 'manual_stop'
+                 self.store.save(task)
+             self.wakeup.set()
+--- a/worker.py
++++ b/worker.py
+@@ -27,7 +27,7 @@
+                 self._cleanup_failed(job['job_id'])
+                 continue
+             execution = job.get('execution') or {}
+-            finished_before_checkpoint = (self.settings.port == 8788 and job['status'] == 'running'
++            finished_before_checkpoint = (self.settings.port == 8789 and job['status'] == 'running'
+                                           and execution.get('turn_completed') is True
+                                           and execution.get('trace_complete') is True)
+             if (job['status'] == 'checking' or finished_before_checkpoint) and execution.get('exit_code') == 0:
+@@ -35,7 +35,7 @@
+             elif job['status'] == 'cancelling':
+                 await self._finish(job['job_id'], 'cancelled')
+             else:
+-                if self.settings.port == 8788 and job.get('process') and job.get('started_at'):
++                if self.settings.port == 8789 and job.get('process') and job.get('started_at'):
+                     # recover() just reconciled the recorded Windows process tree. A hard exit
+                     # cannot write the normal end-of-turn cleanup. Bind this proof to this run.
+                     self.store.update(job['job_id'], expected={job['status']},
+@@ -134,7 +134,7 @@
+             elif exc.code == 'CANCEL_REQUESTED':
+                 state = 'interrupted' if self.shutdown_requested else 'cancelled'
+                 error = {'code':'WORKER_STOPPED', 'message':'服务关闭中断了本次执行。'} if (
+-                    state == 'interrupted' and self.settings.port == 8788) else None
++                    state == 'interrupted' and self.settings.port == 8789) else None
+                 await self._finish(job['job_id'], state, error=error)
+             else:
+                 await self._finish(job['job_id'], 'failed', error=exc.public())

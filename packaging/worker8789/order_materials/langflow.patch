@@ -1,0 +1,387 @@
+--- a/CustomComponent-MVPInputs.py
++++ b/CustomComponent-MVPInputs.py
+@@ -5,6 +5,8 @@
+ import re
+ import uuid
+
++
++# ORDER_MATERIALS_LIBRARY
+
+ DOCUMENTS = ('prompt_file', 'project_style', 'general_style')
+
+@@ -26,6 +28,27 @@
+     original = json.loads(text, object_pairs_hook=pairs, parse_constant=invalid_number)
+     json.dumps(original, allow_nan=False)
+     submission_key = None
++    replaces_task_id = None
++    if isinstance(original, dict) and original.get('operation') == 'replace':
++        replaces_task_id = original.get('task_id')
++        if not isinstance(replaces_task_id, str) or not re.fullmatch(r'task_[a-f0-9]{32}', replaces_task_id):
++            raise ValueError('换稿需要原订单的 task_id。')
++        try:
++            submission_key = str(uuid.UUID(original['submission_key']))
++        except (KeyError, TypeError, ValueError, AttributeError):
++            raise ValueError('请为本次换稿提供 submission_key（UUID），重试沿用同一个值。') from None
++        original = {k:v for k,v in original.items() if k not in ('operation','task_id','submission_key')}
++    if isinstance(original, dict) and original.get('operation') == 'resume':
++        task_id = original.get('task_id')
++        if not isinstance(task_id, str) or not re.fullmatch(r'task_[a-f0-9]{32}', task_id) or 'segments' in original:
++            raise ValueError('原稿恢复只需要原任务号和 recovery_key。')
++        try:
++            key = str(uuid.UUID(original['recovery_key']))
++        except (KeyError, TypeError, ValueError, AttributeError):
++            raise ValueError('请为本次恢复提供 recovery_key（UUID），重试沿用同一个值。') from None
++        return {'contract':'translation-mvp/background-1','mode':'worker_tasks','operation':'resume',
++                'task_id':task_id, 'recovery_key':key, 'worker_contacted':False}
++
+     if isinstance(original, dict) and original.get('operation') in ('stop','status','result','process','diagnostics','handoff_diagnostics') and not ({'segments', 'source_text'} & original.keys()):
+         operation=original['operation']
+         task_id = original.get('task_id')
+@@ -105,7 +128,7 @@
+         'project_name': original['project_name'] if project else None,
+         'documents': {}, 'targets': {}, 'notes': [], 'worker_contacted': False,
+         'worker_result_ready': False, 'review_completed': False,
+-        'submission_key': submission_key,
++        'submission_key': submission_key, 'replaces_task_id':replaces_task_id,
+     }
+
+
+@@ -303,43 +326,30 @@
+
+
+ class MVPInputs(Component):
+-    display_name = '01 JSON 输入与三份文档'
+-    description = '仅接收上游 project_name/segments 项目包，TB/TM 使用 source/target/enabled；另支持任务控制查询。'
++    display_name = '01 翻译需求与随单资料'
++    description = '新单接收项目 JSON、Prompt 和可变数量的 Markdown。控制查询只需原任务参数。'
+     name = 'MVPInputs'
+     icon = 'Files'
+     inputs = [MessageTextInput(name='request_json', display_name='上游 JSON', required=True),
+               StrInput(name='submission_key', display_name='提交幂等 UUID', value='', advanced=True),
+-              FileInput(name='prompt_file', display_name='翻译 Prompt', file_types=['md', 'txt'], required=False),
+-              FileInput(name='project_style', display_name='风格指南', file_types=['md', 'txt', 'doc', 'docx'], required=False),
+-              FileInput(name='general_style', display_name='EC 本地化通用准则', file_types=['md', 'txt', 'doc', 'docx'], required=False)]
++              MessageTextInput(name='materials_json', display_name='本单 Prompt 和参考材料 JSON', required=False)]
+     outputs = [Output(name='result', display_name='输入与资料状态', method='prepare')]
+
+     def prepare(self) -> Data:
+         try:
+             state = parse_request(str(self.request_json or ''), per_segment_languages=True)
+             if state['operation'] != 'submit':
+-                state['review_document_bindings']={role:getattr(self,role,None) for role in DOCUMENTS}
+                 self.status = '已识别任务状态查询请求'
+                 return Data(data=state)
+             key=str(getattr(self,'submission_key','') or '').strip()
++            if key and state.get('replaces_task_id') and key.lower() != state['submission_key']:
++                raise ValueError('换稿 JSON 和节点指定了不同的提交编号。')
+             if key:
+                 try:state['submission_key']=str(uuid.UUID(key))
+                 except (ValueError,TypeError,AttributeError):raise ValueError('submission_key 必须是 UUID。') from None
+-            for role in DOCUMENTS:
+-                value = getattr(self, role, None)
+-                if isinstance(value, list):
+-                    if len(value) > 1:
+-                        raise ValueError('每个文件框只上传一份文件。')
+-                    value = value[0] if value else None
+-                if not value:
+-                    state['documents'][role] = {'ready': False}
+-                    continue
+-                path = Path(value if Path(value).is_absolute() else self.get_full_path(value))
+-                path = Path(enforce_local_file_access(path, scope_ids=component_file_access_scopes(self)))
+-                if not path.is_file():
+-                    raise ValueError('绑定文档不可读取，请重新上传。')
+-                state['documents'][role] = {'ready': True, 'filename': path.name, 'bytes': path.stat().st_size, 'path': str(path)}
+-            self.status = f"已校验 {len(state['records'])} 条；已上传 {sum(d['ready'] for d in state['documents'].values())}/3 份文档"
++            materials = parse_materials_json(str(self.materials_json or ''))
++            state['order_materials'] = materials
++            self.status = f"已校验 {len(state['records'])} 个句段和 {len(materials['reference_files'])} 份参考材料"
+             return Data(data=state)
+         except (ValueError, TypeError, OSError) as exc:
+             return Data(data={'mode': 'scaffold', 'error': {'code': 'INVALID_INPUT', 'message': str(exc)}})
+--- a/CustomComponent-MVPSubmit.py
++++ b/CustomComponent-MVPSubmit.py
+@@ -5,6 +5,8 @@
+ import re
+ import uuid
+
++
++# ORDER_MATERIALS_LIBRARY
+
+ DOCUMENTS = ('prompt_file', 'project_style', 'general_style')
+
+@@ -338,6 +340,8 @@
+ class TaskClient:
+     def __init__(self, base, token, *, allow_insecure_http=False, transport=None):
+         self.base = worker_url(base, allow_insecure_http=allow_insecure_http)
++        if self.base != 'http://52.62.69.192:8789':
++            raise ValueError('INVALID_DEV_TARGET: 此 Flow 只接受 8789 开发 Worker。')
+         self.token = token
+         self.timings = []
+         self.http = httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False,
+@@ -472,10 +476,12 @@
+             raise ValueError('BATCH_RESULT_INVALID: 批次译文条目缺失、重复或不匹配。')
+         return value
+
+-    async def submit(self, original, documents, key, timeout_seconds=1800, *, tm_policy=None, language_mode=None):
++    async def submit(self, original, documents, key, timeout_seconds=1800, *, tm_policy=None, language_mode=None, replaces_task_id=None):
+         key = str(uuid.UUID(key))
+         payload = json.dumps(original, ensure_ascii=False, allow_nan=False).encode('utf-8')
+         options = {'timeout_seconds': timeout_seconds}
++        if replaces_task_id:
++            options['replaces_task_id'] = replaces_task_id
+         if tm_policy:
+             options['tm_policy'] = tm_policy
+         if language_mode:
+@@ -483,16 +489,16 @@
+         for attempt in range(2):
+             try:
+                 with ExitStack() as stack:
+-                    uploads = {'source_file': ('request.json', io.BytesIO(payload), 'application/json')}
+-                    for role in ('prompt_file', 'project_style', 'general_style'):
+-                        path = Path(documents[role])
+-                        uploads[role] = (role+path.suffix.lower(), stack.enter_context(path.open('rb')), 'application/octet-stream')
++                    uploads = [('source_file', ('request.json', io.BytesIO(payload), 'application/json'))]
++                    for role, (filename, path) in documents.items():
++                        field = 'prompt_file' if role == 'prompt_file' else 'reference_files'
++                        uploads.append((field, (filename, stack.enter_context(Path(path).open('rb')), 'text/markdown')))
+                     value = await self.request('POST', '/v1/tasks', files=uploads,
+                                                data={'options': json.dumps(options)},
+                                                headers={'Idempotency-Key': key})
+                 if value.get('contract') != 'translation-task/1' or not re.fullmatch(r'task_[a-f0-9]{32}', str(value.get('task_id',''))):
+                     raise RemoteWorkerError('Worker 返回了无效任务编号；请用原提交编号查询，不要更换编号重复提交。')
+-                if value.get('status') not in ('queued','running','completed','failed') or not isinstance(value.get('progress'), dict):
++                if value.get('status') not in ('queued','running','stopping','stopped','completed','failed') or not isinstance(value.get('progress'), dict):
+                     raise RemoteWorkerError('Worker 任务状态结构无效。')
+                 if tm_policy and value.get('tm_policy') != tm_policy:
+                     raise RemoteWorkerError('Worker 回执与提交的 TM 策略不一致，请用原提交编号核对。')
+@@ -786,23 +792,19 @@
+         result.append(current)
+     return result
+
+-def snapshot_documents(root,paths):
+-    folder=Path(root)/'documents'
++def snapshot_documents(root, materials):
++    folder = Path(root)/'documents'
+     folder.mkdir(exist_ok=True)
+-    result={}
+-    for role in ('prompt_file','project_style','general_style'):
+-        source=Path(paths[role])
+-        raw=source.read_bytes()
+-        if not raw:
+-            raise ValueError('REVIEW_DOCUMENTS_MISSING: 上传文档为空。')
+-        if role=='prompt_file':
+-            raw.decode('utf-8-sig')
+-        name=role+source.suffix.lower()
+-        (folder/name).write_bytes(raw)
+-        result[role]={'relative':'documents/'+name,'filename':source.name,'sha256':hashlib.sha256(raw).hexdigest()}
+-    return result
+-
+-async def pin_submission_documents(root,key,original,paths, *, tm_policy=None, language_mode=None):
++    record = {}
++    documents = [materials['prompt_file'], *materials['reference_files']]
++    for i, (item, info) in enumerate(zip(documents, materials_index(materials))):
++        role = 'prompt_file' if i == 0 else f'ref_{i-1:04d}'
++        relative = f'documents/{role}.md'
++        (Path(root)/relative).write_bytes(item['content'].encode('utf-8'))
++        record[role] = {**info, 'relative': relative}
++    return record
++
++async def pin_submission_documents(root,key,original,materials, *, tm_policy=None, language_mode=None, replaces_task_id=None):
+     """Freeze the exact uploaded bytes once per idempotent submission."""
+     folder=Path(root)/'submissions'/str(uuid.UUID(key))
+     folder.mkdir(parents=True,exist_ok=True)
+@@ -813,14 +815,15 @@
+         except ReviewBusy:
+             await asyncio.sleep(.05)
+     try:
+-        fingerprint=review_digest({'input':original,'documents':{role:hashlib.sha256(Path(path).read_bytes()).hexdigest() for role,path in paths.items()}})
++        material_sha = materials_digest(materials_index(materials))
++        fingerprint=review_digest({'input':original,'materials_sha256':material_sha,'replaces_task_id':replaces_task_id})
+         meta=folder/'inputs.json'
+         if meta.exists():
+             record=json.loads(meta.read_text(encoding='utf-8'))
+             if record['fingerprint']!=fingerprint:
+                 raise ValueError('SUBMISSION_INPUT_CHANGED: 相同提交编号的输入或文档已改变，请使用新的编号。')
+         else:
+-            record={'fingerprint':fingerprint,'documents':snapshot_documents(folder,paths)}
++            record={'fingerprint':fingerprint,'materials_sha256':material_sha,'documents':snapshot_documents(folder,materials)}
+             if tm_policy:
+                 record['tm_policy'] = tm_policy
+             if language_mode:
+@@ -838,16 +841,18 @@
+             path=folder/entry['relative']
+             if hashlib.sha256(path.read_bytes()).hexdigest()!=entry['sha256']:
+                 raise ValueError('REVIEW_DOCUMENTS_CHANGED: 已保存的提交资料发生变化。')
+-            result[role]=str(path)
++            result[role]=(entry['filename'], str(path))
+         return result
+     finally:
+         lock.close()
+
+-def bind_review_context(root,key,task_id, *, tm_policy=None, language_mode=None):
++def bind_review_context(root,key,task_id, *, tm_policy=None, language_mode=None, materials_sha256=None):
+     folder=Path(root)/'task_inputs'
+     folder.mkdir(parents=True,exist_ok=True)
+     path=folder/(task_id+'.json')
+     value={'submission_key':str(uuid.UUID(key))}
++    if materials_sha256:
++        value['materials_sha256']=materials_sha256
+     if tm_policy:
+         value['tm_policy'] = tm_policy
+     if language_mode:
+@@ -1167,6 +1172,8 @@
+     policy = remote.get('tm_policy')
+     pointer = Path(namespace) / 'task_inputs' / (task_id + '.json')
+     bound = json.loads(pointer.read_text(encoding='utf-8')) if pointer.exists() else None
++    if bound and bound.get('materials_sha256') and remote.get('materials_sha256') != bound['materials_sha256']:
++        raise ValueError('MATERIALS_CHANGED: 定稿绑定的资料与提交快照不符。')
+     if policy not in (None, CONTEXTUAL_TM) or (bound is not None and bound.get('tm_policy') != policy):
+         raise ValueError('TM_POLICY_CHANGED: Worker 策略与提交快照不一致。')
+     language_mode = remote.get('language_mode')
+@@ -1209,6 +1216,8 @@
+         evidence = {'tm_decisions': decisions, 'tm_decisions_sha256': decision_hash, 'tm_summary': summary}
+     else:
+         result = verify_project_candidate(original, candidate)
++    if bound and bound.get('materials_sha256') and published.get('materials_sha256') != bound['materials_sha256']:
++        raise ValueError('MATERIALS_CHANGED: 批次定稿的资料摘要不匹配。')
+     view = worker_view(published)
+     session = remote.get("session_progress") or {}
+     if "recent_actions" in session:
+@@ -1509,7 +1518,7 @@
+     meta = json.loads((Path(namespace) / 'submissions' / str(uuid.UUID(submission_key)) / 'inputs.json').read_text(encoding='utf-8'))
+     mode = meta.get('language_mode')
+     if mode is not None and mode not in (capabilities.get('language_modes') or ()):
+-        raise RemoteWorkerError('WORKER_UPGRADE_REQUIRED: 8788 尚未声明逐句语言模式。更新 Worker 后可用原提交编号重试。', rejected=True)
++        raise RemoteWorkerError('WORKER_UPGRADE_REQUIRED: 8789 尚未声明逐句语言模式。更新 Worker 后可用原提交编号重试。', rejected=True)
+     return mode
+
+ def documents_for_tm_retry(namespace, key, documents, v2_prompt_hash):
+@@ -1543,9 +1552,6 @@
+         state = prepare_submission(self.state.data)
+         if state.get('error') or state['operation'] != 'submit':
+             return Data(data=state)
+-        if any(not state['documents'].get(role,{}).get('ready') for role in DOCUMENTS):
+-            self.status = '请先上传三份文档'
+-            return Data(data=state)
+         token = self.service_token.get_secret_value() if hasattr(self.service_token,'get_secret_value') else str(self.service_token or '')
+         client = None
+         timing={}
+@@ -1556,25 +1562,34 @@
+             timeout = int(self.timeout_seconds)
+             if not 60 <= timeout <= 7200:
+                 raise ValueError('整单执行时限需为 60～7200 秒。')
+-            documents = {role: str(enforce_local_file_access(Path(state['documents'][role]['path']),
+-                        scope_ids=component_file_access_scopes(self))) for role in DOCUMENTS}
++            if str(self.service_url).rstrip('/') != 'http://52.62.69.192:8789':
++                raise ValueError('INVALID_DEV_TARGET: 必须使用 8789 开发 Worker。')
++            materials = state.pop('order_materials')
++            material_sha = materials_digest(materials_index(materials))
+             client = TaskClient(self.service_url, token, allow_insecure_http=bool(self.allow_insecure_http))
+             state['worker_contacted'] = True
+             state['worker_capabilities']=await client.capabilities()
++            if state.get('replaces_task_id') and state['worker_capabilities'].get('replace_in_place') is not True:
++                raise ValueError('WORKER_UPGRADE_REQUIRED: 此 Worker 尚未支持原位换稿。')
++            caps=state['worker_capabilities']
++            if (caps.get('order_materials_contract') != MATERIALS_CONTRACT or caps.get('strict_project_order') is not True
++                    or caps.get('same_name_parallel') is not False or not caps.get('project_thread_continuity')):
++                raise ValueError('WORKER_UPGRADE_REQUIRED: 8789 尚未启用项目顺序、原会话及随单资料。')
+             snapshot_started=time.monotonic()
+             review_root=component_review_root(self,client.base)
+-            documents=documents_for_tm_retry(review_root,state['submission_key'],documents,V2_TM_PROMPT_SHA256)
+-            frozen=await pin_submission_documents(review_root,state['submission_key'],state['original'],documents,
+-                tm_policy=new_order_tm_policy(state['original'],state['worker_capabilities']), language_mode='per-segment')
++            frozen=await pin_submission_documents(review_root,state['submission_key'],state['original'],materials,
++                tm_policy=CONTEXTUAL_TM, language_mode='per-segment', replaces_task_id=state.get('replaces_task_id'))
+             chosen_language_mode = submitted_language_mode(review_root,state['submission_key'],state['worker_capabilities'])
+             chosen_tm_policy = submitted_tm_policy(review_root,state['submission_key'],state['worker_capabilities'])
+             timing['document_snapshot_seconds']=round(time.monotonic()-snapshot_started,3)
+             receipt = await client.submit(worker_request(state['original'], contextual_tm=bool(chosen_tm_policy)),
+-                frozen, state['submission_key'], timeout, tm_policy=chosen_tm_policy, language_mode=chosen_language_mode)
++                frozen, state['submission_key'], timeout, tm_policy=chosen_tm_policy, language_mode=chosen_language_mode, replaces_task_id=state.get('replaces_task_id'))
++            if receipt.get('materials_sha256') != material_sha:
++                raise RemoteWorkerError('Worker 回执的资料摘要与本次提交不符；请沿用原提交键核对。')
+             state.update(task_id=receipt['task_id'], remote_task=receipt, submission_stage='submitted', mode='worker_tasks')
+             bind_started=time.monotonic()
+             try:
+-                bind_review_context(review_root,state['submission_key'],receipt['task_id'],tm_policy=chosen_tm_policy,language_mode=chosen_language_mode)
++                bind_review_context(review_root,state['submission_key'],receipt['task_id'],tm_policy=chosen_tm_policy,language_mode=chosen_language_mode,materials_sha256=material_sha)
+             except (ValueError,OSError) as exc:
+                 state['review_context_error']={'code':'REVIEW_CONTEXT_SAVE_FAILED','message':remote_error_text(exc,'审校资料关联',token)}
+             timing['context_binding_seconds']=round(time.monotonic()-bind_started,3)
+@@ -1595,8 +1610,8 @@
+
+     async def run(self) -> Data:
+         state = self.state.data
+-        if state.get("operation") == "stop":
+-            return Data(data={"operation":"stop", "public_snapshot":{
++        if state.get("operation") in ("stop", "resume"):
++            return Data(data={"operation":state["operation"], "public_snapshot":{
+                 "status":"query_not_requested", "task_id":state["task_id"], "query_only":True}})
+         if state.get("operation") in ("status", "result", "process", "diagnostics", "handoff_diagnostics"):
+             return Data(data=await read_worker_component(self, state, component_review_root))
+--- a/CustomComponent-MVPQuery.py
++++ b/CustomComponent-MVPQuery.py
+@@ -338,6 +338,8 @@
+ class TaskClient:
+     def __init__(self, base, token, *, allow_insecure_http=False, transport=None):
+         self.base = worker_url(base, allow_insecure_http=allow_insecure_http)
++        if self.base != 'http://52.62.69.192:8789':
++            raise ValueError('INVALID_DEV_TARGET: 此 Flow 只接受 8789 开发 Worker。')
+         self.token = token
+         self.timings = []
+         self.http = httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False,
+@@ -1337,6 +1339,8 @@
+     policy = remote.get('tm_policy')
+     pointer = Path(namespace) / 'task_inputs' / (task_id + '.json')
+     bound = json.loads(pointer.read_text(encoding='utf-8')) if pointer.exists() else None
++    if bound and bound.get('materials_sha256') and remote.get('materials_sha256') != bound['materials_sha256']:
++        raise ValueError('MATERIALS_CHANGED: 定稿绑定的资料与提交快照不符。')
+     if policy not in (None, CONTEXTUAL_TM) or (bound is not None and bound.get('tm_policy') != policy):
+         raise ValueError('TM_POLICY_CHANGED: Worker 策略与提交快照不一致。')
+     language_mode = remote.get('language_mode')
+@@ -1379,6 +1383,8 @@
+         evidence = {'tm_decisions': decisions, 'tm_decisions_sha256': decision_hash, 'tm_summary': summary}
+     else:
+         result = verify_project_candidate(original, candidate)
++    if bound and bound.get('materials_sha256') and published.get('materials_sha256') != bound['materials_sha256']:
++        raise ValueError('MATERIALS_CHANGED: 批次定稿的资料摘要不匹配。')
+     view = worker_view(published)
+     session = remote.get("session_progress") or {}
+     if "recent_actions" in session:
+@@ -1400,14 +1406,25 @@
+
+ async def read_delivery(client, namespace, state):
+     operation, task_id = state["operation"], state["task_id"]
++    if operation == "resume":
++        if client.base != "http://52.62.69.192:8789" or not re.fullmatch(r"task_[0-9a-f]{32}", task_id):
++            raise ValueError("请提供此 8789 翻译服务的任务编号。")
++        capabilities = await project_request(client.capabilities)
++        if capabilities.get("task_resume") is not True:
++            raise ValueError("WORKER_UPGRADE_REQUIRED: 此 Worker 尚未支持原位恢复。")
++        value = await project_request(lambda: client.request("POST", "/v1/tasks/"+task_id+"/resume",
++                                      headers={"Idempotency-Key":state["recovery_key"]}, timeout=120))
++        if value.get("contract") != "translation-task/1" or value.get("task_id") != task_id:
++            raise ValueError("WORKER_RESPONSE_INVALID: 恢复回执与原单不符。")
++        return worker_view(value)
+     if operation == "stop":
+         if client.base != "http://52.62.69.192:8789" or not re.fullmatch(r"task_[0-9a-f]{32}", task_id):
+-            raise ValueError("INVALID_STOP_TARGET: 请提供开发 Worker 的任务编号。")
++            raise ValueError("INVALID_STOP_TARGET: 请提供此 8789 翻译服务的任务编号。")
+         capabilities = await project_request(client.capabilities)
+         if capabilities.get("task_stop") is not True:
+             return {"operation":"stop", "task_id":task_id, "status":"worker_upgrade_required",
+                     "result_available":False, "error":{"code":"WORKER_UPGRADE_REQUIRED",
+-                    "message":"8789 尚未启用整单停止，请先更新开发 Worker。"}}
++                    "message":"8789 尚未启用整单停止，请先更新翻译 Worker。"}}
+         value = await project_request(lambda: client.request("POST", "/v1/tasks/"+task_id+"/stop", timeout=30))
+         if (value.get("contract") != "translation-task/1" or value.get("task_id") != task_id
+                 or value.get("status") not in ("stopping","stopped","completed","failed")):
+@@ -1692,7 +1709,7 @@
+     meta = json.loads((Path(namespace) / 'submissions' / str(uuid.UUID(submission_key)) / 'inputs.json').read_text(encoding='utf-8'))
+     mode = meta.get('language_mode')
+     if mode is not None and mode not in (capabilities.get('language_modes') or ()):
+-        raise RemoteWorkerError('WORKER_UPGRADE_REQUIRED: 8788 尚未声明逐句语言模式。更新 Worker 后可用原提交编号重试。', rejected=True)
++        raise RemoteWorkerError('WORKER_UPGRADE_REQUIRED: 8789 尚未声明逐句语言模式。更新 Worker 后可用原提交编号重试。', rejected=True)
+     return mode
+
+ def documents_for_tm_retry(namespace, key, documents, v2_prompt_hash):

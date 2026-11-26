@@ -1,16 +1,23 @@
-"""Upgrade only the IM development graph; dry run unless --apply is supplied."""
+"""Preview or publish the order materials graph on the IM 8789 development Flow."""
+
 import argparse
 import copy
+from getpass import getpass
 import hashlib
 import json
 import os
+from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-BASE = 'http://218.60.7.98:7860'
-DEV = '9f26a456-0a79-4b62-9cfe-438006c339b3'
-PROD = '0da8b7c3-dc59-4df7-85cc-5f37cc84158b'
-PROJECT = '47bc7ec5-e7bb-4304-8b0c-19298c6ace05'
-WORKER = 'http://52.62.69.192:8789'
+BASE = "http://218.60.7.98:7860"
+DEV = "9f26a456-0a79-4b62-9cfe-438006c339b3"
+PROJECT = "47bc7ec5-e7bb-4304-8b0c-19298c6ace05"
+WORKER = "http://52.62.69.192:8789"
+FILES = Path(__file__).resolve().parent / "order_materials"
+NODES = ("CustomComponent-MVPInputs", "CustomComponent-MVPSubmit", "CustomComponent-MVPQuery")
+CONTRACT = "order-materials/1"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -18,92 +25,159 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def flow(flow_id, graph=None, revision=None):
-    headers = {'x-api-key': os.environ['LANGFLOW_API_KEY']}
-    body = None
-    if graph is not None:
-        if flow_id != DEV or not revision:
-            raise ValueError('Expected versioned development flow')
-        headers.update({'Content-Type':'application/json', 'If-Match':revision})
-        body = json.dumps({'data':graph}, ensure_ascii=False).encode()
-    req = Request(f'{BASE}/api/v1/flows/{flow_id}', data=body, headers=headers,
-                  method='GET' if body is None else 'PATCH')
-    with build_opener(ProxyHandler({}), NoRedirect()).open(req, timeout=60) as response:
-        value = json.load(response)
-        return value, response.headers.get('ETag') or value.get('version_token')
+def request(url, headers, *, patch=None):
+    body = None if patch is None else json.dumps(patch, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    req = Request(url, data=body, headers=headers, method="GET" if body is None else "PATCH")
+    with build_opener(ProxyHandler({}), NoRedirect()).open(req, timeout=90) as resp:
+        return json.load(resp), resp.headers.get("ETag")
 
 
-def replace_once(source, before, after):
-    if after in source:
-        return source
-    if source.count(before) != 1:
-        raise ValueError('Unexpected node implementation; inspect current dev graph')
-    return source.replace(before, after)
+def fetch(key):
+    flow, etag = request(BASE + "/api/v1/flows/" + DEV, {"x-api-key": key})
+    if (flow.get("id"), flow.get("name"), flow.get("folder_id")) != (DEV, "翻译流程MVP-v2-dev", PROJECT):
+        raise ValueError("Expected the dedicated 8789 development Flow.")
+    schemas = {n["id"]: n["data"]["node"] for n in flow["data"]["nodes"]}
+    if any(schemas[n]["template"]["service_url"]["value"].rstrip("/") != WORKER for n in NODES[1:]):
+        raise ValueError("Development graph has an unexpected Worker binding.")
+    return flow, etag or flow.get("version_token")
 
 
-def patch_graph(original):
+def sha(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def patched_graph(original):
     graph = copy.deepcopy(original)
-    templates = {node['id']:node['data']['node'] for node in graph['nodes']}
-    for name in ('MVPInputs','MVPSubmit','MVPQuery'):
-        node = templates['CustomComponent-'+name]
-        template = node['template']
-        source = template['code']['value']
-        if name == 'MVPInputs':
-            source = replace_once(source, "original.get('operation') in ('status','result','process',",
-                                  "original.get('operation') in ('stop','status','result','process',")
-        else:
-            if template['service_url']['value'].rstrip('/') != WORKER:
-                raise ValueError('Development Worker endpoint mismatch')
-            source = replace_once(source,
-                "value.get('task_id') != task_id or value.get('status') not in ('queued','running','completed','failed')",
-                "value.get('task_id') != task_id or value.get('status') not in ('queued','running','stopping','stopped','completed','failed')")
-            source = replace_once(source, 'while remote["status"] in ("queued", "running"):',
-                                  'while remote["status"] in ("queued", "running", "stopping"):')
-            if name == 'MVPSubmit':
-                anchor = '        if state.get("operation") in ("status", "result", "process", "diagnostics", "handoff_diagnostics"):'
-                source = replace_once(source, anchor, '''        if state.get("operation") == "stop":
-            return Data(data={"operation":"stop", "public_snapshot":{
-                "status":"query_not_requested", "task_id":state["task_id"], "query_only":True}})
-'''+anchor)
-            else:
-                anchor = '    operation, task_id = state["operation"], state["task_id"]\n'
-                source = replace_once(source, anchor, anchor+'''    if operation == "stop":
-        if client.base != "http://52.62.69.192:8789" or not re.fullmatch(r"task_[0-9a-f]{32}", task_id):
-            raise ValueError("INVALID_STOP_TARGET: 请提供开发 Worker 的任务编号。")
-        capabilities = await project_request(client.capabilities)
-        if capabilities.get("task_stop") is not True:
-            return {"operation":"stop", "task_id":task_id, "status":"worker_upgrade_required",
-                    "result_available":False, "error":{"code":"WORKER_UPGRADE_REQUIRED",
-                    "message":"8789 尚未启用整单停止，请先更新开发 Worker。"}}
-        value = await project_request(lambda: client.request("POST", "/v1/tasks/"+task_id+"/stop", timeout=30))
-        if (value.get("contract") != "translation-task/1" or value.get("task_id") != task_id
-                or value.get("status") not in ("stopping","stopped","completed","failed")):
-            raise ValueError("WORKER_RESPONSE_INVALID: 停止回执与本单不匹配。")
-        return worker_view(value)
-''')
-        compile(source, name, 'exec')
-        if template['code']['value'] != source:
-            template['code']['value'] = source
-            node.setdefault('metadata', {})['code_hash'] = hashlib.sha256(source.encode()).hexdigest()[:12]
+    nodes = {n["id"]: n["data"]["node"] for n in graph["nodes"]}
+    hashes = json.loads((FILES / "flow_base.json").read_text(encoding="utf-8"))
+    library = (FILES / "materials.py").read_text(encoding="utf-8").rstrip()
+    marker = "# ORDER_MATERIALS_LIBRARY"
+    raw = {name + ".py": nodes[name]["template"]["code"]["value"] for name in NODES}
+    if all(sha(raw[name].replace(library, marker)) == hashes[name]["template"] for name in raw):
+        updated = {name: raw[name] for name in raw}
+    else:
+        if not all(sha(src) == hashes[name]["before"] for name, src in raw.items()):
+            raise ValueError("A development node has drifted; review its diff before applying.")
+        with TemporaryDirectory(prefix="lf-8789-") as tmp:
+            path = Path(tmp)
+            for name, code in raw.items():
+                (path / name).write_text(code, encoding="utf-8", newline="\n")
+            subprocess.run(
+                ["git", "apply", "--no-index", "--whitespace=nowarn", str(FILES / "langflow.patch")],
+                cwd=path,
+                check=True,
+            )
+            updated = {}
+            for name in raw:
+                src = (path / name).read_text(encoding="utf-8")
+                if sha(src) != hashes[name]["template"]:
+                    raise ValueError("Patched node hash mismatch: " + name)
+                updated[name] = src.replace(marker, library)
+    for name in NODES:
+        code = updated[name + ".py"]
+        compile(code, name, "exec")
+        schema = nodes[name]
+        schema["template"]["code"]["value"] = code
+        schema.setdefault("metadata", {})["code_hash"] = sha(code)[:12]
+    inputs = nodes[NODES[0]]
+    template = inputs["template"]
+    field = copy.deepcopy(template["request_json"])
+    field.update(
+        name="materials_json",
+        display_name="本单 Prompt 和参考材料 JSON",
+        value="",
+        required=False,
+        info="新提交或换稿时传入序列化的 prompt_file 和 reference_files，其他操作不需要。",
+    )
+    template["materials_json"] = field
+    old = ("prompt_file", "project_style", "general_style")
+    for k in old:
+        template.pop(k, None)
+    if isinstance(inputs.get("field_order"), list):
+        inputs["field_order"] = [k for k in inputs["field_order"] if k not in (*old, "materials_json")] + [
+            "materials_json"
+        ]
+    inputs.update(
+        display_name="01 翻译需求与随单资料",
+        description="新单接收项目 JSON、Prompt 和可变数量的 Markdown。控制查询只需原任务参数。",
+    )
     return graph
 
 
+def check_worker(graph):
+    schema = next(n for n in graph["nodes"] if n["id"] == NODES[1])["data"]["node"]["template"]
+    token = schema["service_token"].get("value")
+    if not token or schema["service_token"].get("load_from_db") or set(token) <= set("*•"):
+        token = getpass("8789 Worker token: ")
+    caps, _ = request(WORKER + "/v1/tasks/capabilities", {"Authorization": "Bearer " + token})
+    if (
+        caps.get("order_materials_contract") != CONTRACT
+        or caps.get("same_name_parallel") is not False
+        or not caps.get("project_thread_continuity")
+        or not all(
+            caps.get(k) is True
+            for k in (
+                "strict_project_order",
+                "task_stop",
+                "task_resume",
+                "replace_in_place",
+                "auto_resume_interrupted_predecessor",
+            )
+        )
+    ):
+        raise SystemExit("先升级 8789 Worker；本次未写入开发 Flow。")
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--apply', action='store_true')
-    args = parser.parse_args()
-    dev, revision = flow(DEV)
-    if dev['name'] != '翻译流程MVP-v2-dev' or dev['folder_id'] != PROJECT:
-        raise ValueError('Unexpected development flow')
-    graph = patch_graph(dev['data'])
-    if graph != dev['data'] and args.apply:
-        prod, _ = flow(PROD)
-        flow(DEV, graph, revision)
-        if flow(DEV)[0]['data'] != graph or flow(PROD)[0]['data'] != prod['data']:
-            raise RuntimeError('Flow readback mismatch')
-    print(json.dumps({'flow':DEV, 'updated':args.apply and dev['data'] != graph,
-                      'worker':WORKER, 'nodes':len(graph['nodes']), 'edges':len(graph['edges'])}))
+    cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument("--apply", action="store_true")
+    cli.add_argument(
+        "--export-nodes",
+        type=Path,
+        help="Save verified development node code for offline tests (no graph configuration or tokens).",
+    )
+    args = cli.parse_args()
+    key = os.environ.get("LANGFLOW_API_KEY") or getpass("Langflow API key: ")
+    flow, etag = fetch(key)
+    before = flow["data"]
+    after = patched_graph(before)
+    if args.export_nodes:
+        args.export_nodes.mkdir(parents=True, exist_ok=False)
+        for node in before["nodes"]:
+            if node["id"] in NODES:
+                (args.export_nodes / (node["id"] + ".py")).write_text(
+                    node["data"]["node"]["template"]["code"]["value"], encoding="utf-8", newline="\n"
+                )
+    if args.apply:
+        check_worker(before)
+        if before != after:
+            # Some Langflow releases return a version token, others only updated_at.
+            latest, revision = fetch(key)
+            if (
+                latest["data"] != before
+                or latest.get("updated_at") != flow.get("updated_at")
+                or etag != revision
+            ):
+                raise SystemExit("开发 Flow 在预览后已更改。")
+            headers = {"x-api-key": key, "Content-Type": "application/json"}
+            if revision:
+                headers["If-Match"] = revision
+            request(BASE + "/api/v1/flows/" + DEV, headers, patch={"data": after})
+        if fetch(key)[0]["data"] != after:
+            raise RuntimeError("Development Flow readback mismatch.")
+    print(
+        json.dumps(
+            {
+                "flow_id": DEV,
+                "worker": WORKER,
+                "applied": args.apply,
+                "changes": before != after,
+                "contract": CONTRACT,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
