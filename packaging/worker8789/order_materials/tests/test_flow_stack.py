@@ -120,7 +120,8 @@ def test_langflow_to_8789_materials_and_result(settings, monkeypatch, tmp_path):
     def route(business, mat=None, key=""):
         inp = entry["MVPInputs"]()
         inp.request_json = json.dumps(business, ensure_ascii=False)
-        inp.materials_json = json.dumps(mat, ensure_ascii=False) if mat is not None else ""
+        # Simulate the Langflow string tweak before the component receives it.
+        inp.materials_json = json.dumps(mat, ensure_ascii=False).replace(r"\n", "\n") if mat is not None else ""
         inp.submission_key = key
         return inp.prepare().data
 

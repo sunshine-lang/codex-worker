@@ -52,9 +52,19 @@ def patched_graph(original):
     hashes = json.loads((FILES / "flow_base.json").read_text(encoding="utf-8"))
     library = (FILES / "materials.py").read_text(encoding="utf-8").rstrip()
     marker = "# ORDER_MATERIALS_LIBRARY"
+    input_library = library + "\n\n" + (FILES / "lf_text.py").read_text(encoding="utf-8").rstrip()
+    ordinary = "parse_materials_json(str(self.materials_json or ''))"
+    from_tweak = "parse_materials_json(restore_tweak_newlines(str(self.materials_json or '')))"
     raw = {name + ".py": nodes[name]["template"]["code"]["value"] for name in NODES}
-    if all(sha(raw[name].replace(library, marker)) == hashes[name]["template"] for name in raw):
-        updated = {name: raw[name] for name in raw}
+    # Recognize both the original materials release and this lossless-text revision.
+    # Hash the rest of each node to retain the guard against unrelated editor changes.
+    input_file = NODES[0] + ".py"
+    templates = {name: src.replace(library, marker) for name, src in raw.items()}
+    templates[input_file] = (
+        raw[input_file].replace(input_library, marker).replace(library, marker).replace(from_tweak, ordinary)
+    )
+    if all(sha(templates[name]) == hashes[name]["template"] for name in raw):
+        updated = templates
     else:
         if not all(sha(src) == hashes[name]["before"] for name, src in raw.items()):
             raise ValueError("A development node has drifted; review its diff before applying.")
@@ -72,9 +82,15 @@ def patched_graph(original):
                 src = (path / name).read_text(encoding="utf-8")
                 if sha(src) != hashes[name]["template"]:
                     raise ValueError("Patched node hash mismatch: " + name)
-                updated[name] = src.replace(marker, library)
+                updated[name] = src
     for name in NODES:
-        code = updated[name + ".py"]
+        template_code = updated[name + ".py"]
+        if name == NODES[0]:
+            if template_code.count(ordinary) != 1:
+                raise ValueError("Unrecognized development materials parser.")
+            code = template_code.replace(marker, input_library).replace(ordinary, from_tweak)
+        else:
+            code = template_code.replace(marker, library)
         compile(code, name, "exec")
         schema = nodes[name]
         schema["template"]["code"]["value"] = code
