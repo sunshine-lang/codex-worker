@@ -4,7 +4,7 @@
 
 本地分支 `codex/8788-aligned` 基于 8789 提交 `5d27d99`。8788 的服务源码在 `source/src/codex_remote_worker/`。后续修改调用接口时，从 `translation_task_api.py` 和 `translation_tasks.py` 入手。
 
-8788 使用 `gpt-6.2-sol / medium`，五个独立通道按整单调度。同名订单可并行，每笔需要模型的订单使用一个作业和一个 Codex 会话。请求使用 8788 自己的地址和服务令牌。通过 `GET /v1/tasks/capabilities` 确认能力，通过 `POST /v1/tasks/{task_id}/stop` 停止指定订单；返回 `stopping` 时继续轮询该订单，直到状态变为 `stopped` 或其他终态。之前版本的发布清单和验证记录保留在本目录。
+8788 使用 `gpt-6.2-sol / medium`，五个通道按整单调度。项目包顶层的 `project_name` 决定工作空间。同名订单按入库顺序使用同一 Codex 对话，不同项目可在空闲通道并行翻译。每单单独查询进度和结果。请求使用 8788 自己的地址和服务令牌。通过 `GET /v1/tasks/capabilities` 确认能力，通过 `POST /v1/tasks/{task_id}/stop` 停止指定订单。返回 `stopping` 时继续轮询该订单，直到状态变为 `stopped` 或其他终态。之前版本的发布清单和验证记录保留在本目录。
 
 ## 按句段语言对翻译
 

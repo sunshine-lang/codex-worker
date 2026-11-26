@@ -26,13 +26,23 @@ class Worker:
             if not await asyncio.to_thread(self.runner.recover, job):
                 self._cleanup_failed(job['job_id'])
                 continue
-            if job['status'] == 'checking' and job.get('execution', {}).get('exit_code') == 0:
+            execution = job.get('execution') or {}
+            finished_before_checkpoint = (self.settings.port == 8788 and job['status'] == 'running'
+                                          and execution.get('turn_completed') is True
+                                          and execution.get('trace_complete') is True)
+            if (job['status'] == 'checking' or finished_before_checkpoint) and execution.get('exit_code') == 0:
                 await self._check_and_finish(job)
             elif job['status'] == 'cancelling':
                 await self._finish(job['job_id'], 'cancelled')
             else:
+                if self.settings.port == 8788 and job.get('process') and job.get('started_at'):
+                    # recover() just reconciled the recorded Windows process tree. A hard exit
+                    # cannot write the normal end-of-turn cleanup. Bind this proof to this run.
+                    self.store.update(job['job_id'], expected={job['status']},
+                                      restart_cleanup={'started_at':job['started_at'], 'process':job['process'],
+                                                       'verified_at':now()})
                 await self._finish(job['job_id'], 'interrupted',
-                                   error={'code': 'WORKER_RESTARTED', 'message': '服务重启中断了任务；未自动重跑。'})
+                                   error={'code': 'WORKER_RESTARTED', 'message': '服务重启中断了本次执行。'})
         self.task = asyncio.create_task(self._loop())
 
     async def ready(self):
@@ -123,7 +133,9 @@ class Worker:
                 self._cleanup_failed(job['job_id'])
             elif exc.code == 'CANCEL_REQUESTED':
                 state = 'interrupted' if self.shutdown_requested else 'cancelled'
-                await self._finish(job['job_id'], state)
+                error = {'code':'WORKER_STOPPED', 'message':'服务关闭中断了本次执行。'} if (
+                    state == 'interrupted' and self.settings.port == 8788) else None
+                await self._finish(job['job_id'], state, error=error)
             else:
                 await self._finish(job['job_id'], 'failed', error=exc.public())
         except asyncio.CancelledError:

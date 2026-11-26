@@ -20,6 +20,7 @@ from .json_delivery import check_json_result, load_json
 from .runner import codex_config_digest
 from .tm_policy import select_tm100
 from .project_activity import activity_progress
+from .project_recovery import interruption_key, queue_resume, service_interruption
 from .contextual_tm import CONTEXTUAL_TM, contextual_auto, contextual_candidates, tm_receipt, verify_tm_report
 from .qa import check_row
 from .review_issues import FILENAME as REVIEW_ISSUES_FILENAME, build_review_report, group_semantic_issues
@@ -165,7 +166,37 @@ class TaskStore:
             row = self.db.execute('SELECT record FROM tasks WHERE request_key=?', (key,)).fetchone()
             return load_json(row[0]) if row else None
 
-    def accept(self, record, stage, destination, capacity):
+    def _bind_project_name(self, name, supplied_id):
+        """Called inside the same write transaction as accepting the order and advancing its head."""
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_names'").fetchone():
+            self.db.execute('CREATE TABLE project_names (name TEXT NOT NULL, project_id TEXT NOT NULL, PRIMARY KEY(name,project_id))')
+            # Old orders with an explicit project ID already own a workspace. Unkeyed orders
+            # have order-scoped threads and cannot safely be merged into one project history.
+            history = self.db.execute("""
+                SELECT task_id, json_extract(record,'$.project_name'), json_extract(record,'$.project_id')
+                FROM tasks WHERE json_extract(record,'$.project_id') IS NOT NULL
+            """)
+            for task_id, old_name, project_id in history:
+                if not old_name or not old_name.strip():
+                    continue
+                if old_name == 'translation-mvp':
+                    # Bare rows also used this fallback name. Only an actual named packet owns it.
+                    plan_path = self.data_root/'tasks'/task_id/'plan.json'
+                    if not plan_path.is_file() or not load_json(plan_path.read_text(encoding='utf-8-sig'))['project']:
+                        continue
+                self.db.execute('INSERT OR IGNORE INTO project_names VALUES (?,?)', (old_name.strip(), project_id))
+        ids = {row[0] for row in self.db.execute('SELECT project_id FROM project_names WHERE name=?', (name,))}
+        if supplied_id and ids and supplied_id not in ids:
+            raise JobError('PROJECT_NAME_CONFLICT', '此名称已绑定其他项目，请核对项目名称和编号。', 409)
+        if not supplied_id and len(ids) > 1:
+            raise JobError('PROJECT_NAME_AMBIGUOUS', '历史上此名称关联多个工作空间，请维护方确认归属后再按名称提交。', 409)
+        if ids:
+            return supplied_id or next(iter(ids))
+        project_id = supplied_id or 'project-' + uuid.uuid4().hex
+        self.db.execute('INSERT INTO project_names VALUES (?,?)', (name, project_id))
+        return project_id
+
+    def accept(self, record, stage, destination, capacity, *, project_name_key=None):
         with self.lock:
             self.db.execute('BEGIN IMMEDIATE')
             moved = False
@@ -179,8 +210,41 @@ class TaskStore:
                 if (self.data_root/'.maintenance.json').exists():
                     raise JobError('MAINTENANCE', '服务正在维护，请使用原提交编号稍后重试。', 503)
                 count = self.db.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('queued','running','stopping')").fetchone()[0]
-                if count >= capacity:
+                replacement = record.get('replaces_task_id')
+                if count >= capacity and not replacement:
                     raise JobError('TASK_QUEUE_FULL', '整单任务队列已满，请使用原提交编号稍后重试。', 429)
+                if project_name_key:
+                    record['project_id'] = self._bind_project_name(project_name_key, record.get('project_id'))
+                if record.get('project_id'):
+                    self.db.execute('CREATE TABLE IF NOT EXISTS project_order_heads (project_id TEXT PRIMARY KEY, task_id TEXT NOT NULL)')
+                    head = self.db.execute('SELECT task_id FROM project_order_heads WHERE project_id=?', (record['project_id'],)).fetchone()
+                    if head:
+                        prior = self.current_attempt(head[0])
+                        if prior.get('tm_policy') != record.get('tm_policy'):
+                            raise JobError('PROJECT_TOOLSET_CHANGED', '同一个项目的续单须使用相同的 TM 工具模式。', 409)
+                    if replacement:
+                        old = self.get(replacement)
+                        if old.get('project_id') != record['project_id']:
+                            raise JobError('PROJECT_BINDING_INVALID', '补交稿的项目与原订单不同。', 409)
+                        self.require_repairable(old)
+                        slot = old.get('order_position_id', replacement)
+                        record['order_position_id'] = slot
+                        if old.get('previous_project_task_id'):
+                            record['previous_project_task_id'] = old['previous_project_task_id']
+                        for field in ('project_parent_thread', 'codex_thread_id'):
+                            if old.get(field):
+                                record['project_parent_thread'] = old[field]
+                        old['replaced_by_task_id'] = record['task_id']
+                        self.save(old)
+                        original = self.get(slot)
+                        original['current_attempt_id'] = record['task_id']
+                        self.save(original)
+                    else:
+                        if head:
+                            record['previous_project_task_id'] = head[0]
+                        self.db.execute('INSERT OR REPLACE INTO project_order_heads VALUES(?,?)', (record['project_id'],record['task_id']))
+                elif replacement:
+                    raise JobError('PROJECT_REQUIRED', '原位换稿需要同一项目名称。', 409)
                 accept_directory(stage, destination, self.data_root)
                 moved = True
                 self.db.execute('INSERT INTO tasks VALUES(?,?,?,?,?,?)',
@@ -203,6 +267,39 @@ class TaskStore:
         with self.lock:
             return [load_json(r[0]) for r in self.db.execute("SELECT record FROM tasks WHERE status IN ('queued','running','stopping') ORDER BY created_at,task_id")]
 
+    def current_attempt(self, slot):
+        original = self.get(slot)
+        if not original.get('current_attempt_id'):
+            return original
+        latest = self.get(original['current_attempt_id'])
+        if latest.get('order_position_id') != slot or latest.get('project_id') != original.get('project_id'):
+            raise JobError('PROJECT_BINDING_INVALID', '补交稿与原订单的位置不一致。', 409)
+        return latest
+
+    def require_repairable(self, task):
+        if not task.get('project_id') or task['status'] not in ('failed', 'stopped') or task.get('replaced_by_task_id'):
+            raise JobError('ORDER_NOT_REPAIRABLE', '只能恢复或替换同项目已停止或失败的当前稿。', 409)
+        slot = task.get('order_position_id', task['task_id'])
+        head = self.db.execute('SELECT task_id FROM project_order_heads WHERE project_id=?', (task['project_id'],)).fetchone()
+        cursor = head[0] if head else None
+        seen = set()
+        # Old versions could skip a stopped order. Never replay it into an already advanced thread.
+        while cursor and cursor != slot and cursor not in seen:
+            seen.add(cursor)
+            successor = self.current_attempt(cursor)
+            if successor.get('session_job_id') or 'project_parent_thread' in successor or successor['status'] == 'completed':
+                raise JobError('PROJECT_ALREADY_ADVANCED', '已有后单开始翻译，不能回写历史订单。', 409)
+            cursor = successor.get('previous_project_task_id')
+        if cursor != slot:
+            raise JobError('PROJECT_BINDING_INVALID', '原订单不在此项目的队列中。', 409)
+
+    def project_predecessor(self, task):
+        if task.get('previous_project_task_id'):
+            prior = self.current_attempt(task['previous_project_task_id'])
+            if prior.get('project_id') != task['project_id']:
+                raise JobError('PROJECT_BINDING_INVALID', '前后订单的项目编号不一致。')
+            return prior
+
 
 def public_task(task, *, include_actions=False):
     total = task['total_rows']
@@ -211,10 +308,22 @@ def public_task(task, *, include_actions=False):
     active = list(dict.fromkeys(active))
     if task['status'] in TASK_TERMINAL:
         active = []
-    tm_fields = {k: task[k] for k in ('language_mode', 'tm_policy', 'tm_summary', 'tm_decisions_sha256') if k in task}
+    tm_fields = {k: task[k] for k in ('language_mode', 'tm_policy', 'tm_summary', 'tm_decisions_sha256', 'project_id', 'previous_project_task_id',
+                                      'order_position_id', 'replaces_task_id', 'replaced_by_task_id', 'current_attempt_id',
+                                      'interruption_reason', 'auto_recovery') if k in task}
     review_fields = {'review_issues_path': f"/v1/tasks/{task['task_id']}/review-issues"} if (
         task['status'] == 'completed' and task.get('review_issues_sha256')) else {}
-    return {**tm_fields, **review_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
+    wait_fields = {}
+    if task.get('stage') in ('waiting_for_project_order', 'waiting_for_project_recovery'):
+        blocker = task.get('waiting_on_task_id') or task.get('previous_project_task_id')
+        if blocker:
+            reason = ('等待同项目前单完成' if task['stage'] == 'waiting_for_project_order'
+                      else '前单已停止或失败，正在等待前单恢复或原位换稿后翻完')
+            reason = {'manual_stop':'前单已人工暂停，等待手动恢复或原位换稿。',
+                      'auto_resuming':'前单正在自动续翻，交付后本单会开始。',
+                      'recovery_blocked':'前单未能自动续翻，请检查前单状态。'}.get(task.get('waiting_on_reason'), reason)
+            wait_fields = {'waiting_on_task_id':blocker,'waiting_on_status_path':f'/v1/tasks/{blocker}','wait_reason':reason}
+    return {**tm_fields, **review_fields, **wait_fields, 'contract': TASK_CONTRACT, 'task_id': task['task_id'], 'status': task['status'], 'stage': task['stage'],
             'project_name': task['project_name'], 'created_at': task['created_at'], 'updated_at': task['updated_at'],
             **({'execution_slot': task['execution_slot']} if task.get('execution_slot') else {}),
             'review_status': task.get('review_report_status', 'not_started'), 'result_kind': 'translation_candidate',
@@ -265,7 +374,7 @@ class TaskManager:
         (stage/'results').mkdir()
         return task_id, stage
 
-    def accept(self, task_id, stage, manifest, options, key, *, tm_policy=None, language_mode=None):
+    def accept(self, task_id, stage, manifest, options, key, *, tm_policy=None, language_mode=None, project_id=None, replaces_task_id=None):
         source = contained_file(stage.resolve(), stage/'input'/manifest['source_file']['filename'])
         if source.suffix.lower() != '.json':
             raise JobError('INVALID_TASK_INPUT', '整单任务的 source_file 必须是 JSON。')
@@ -277,6 +386,14 @@ class TaskManager:
             raise JobError('TM_POLICY_UNAVAILABLE', '按语境处理 TM 需要支持该策略的整单会话 Worker。')
         plan = plan_request(original, self.policy, tm_policy=tm_policy, language_mode=language_mode)
         policy_fields = {k: plan[k] for k in ('tm_policy', 'language_mode') if k in plan}
+        if replaces_task_id:
+            if self.settings.port != 8788 or not self.settings.continuous_project_session or not plan['project']:
+                raise JobError('PROJECT_REQUIRED', '原位换稿需要 8788 的具名项目。', 409)
+            policy_fields['replaces_task_id'] = replaces_task_id
+        if project_id is not None:
+            if self.settings.port != 8788 or not self.settings.continuous_project_session:
+                raise JobError('PROJECT_CONTINUITY_UNAVAILABLE', '此实例未启用跨单原对话续译。')
+            policy_fields['project_id'] = project_id
         write_json(stage/'plan.json', plan)
         created = now()
         record = {**policy_fields, 'task_id': task_id, 'request_key': key,
@@ -290,7 +407,16 @@ class TaskManager:
                   'project_context_enabled': self.settings.project_context_enabled,
                   'continuous_project_session': self.settings.continuous_project_session,
                   'cursor': 0, 'batches': [{'indices': indices, 'job_id': None} for indices in plan['batches']], 'error': None}
-        result = self.store.accept(record, stage, self.root/task_id, self.settings.queue_capacity)
+        name_key = None
+        if self.settings.port == 8788 and self.settings.continuous_project_session and plan['project']:
+            name_key = plan['project_name'].strip()
+        if replaces_task_id and not self.store.by_key(key):
+            old = self.store.get(replaces_task_id)
+            child = self._ended_child(old)
+            thread = ((child or {}).get('execution') or {}).get('thread_id')
+            if thread:
+                record['project_parent_thread'] = thread
+        result = self.store.accept(record, stage, self.root/task_id, self.settings.queue_capacity, project_name_key=name_key)
         return result
 
     def _plan(self, task):
@@ -307,9 +433,29 @@ class TaskManager:
             self.cache[task_id] = load_json((root/'plan.json').read_text(encoding='utf-8'))
         return self.cache[task_id]
 
+    def _session_key(self, task):
+        suffix = ':session' + (':'+str(task['session_attempt']) if task.get('session_attempt') else '')
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id'] + suffix))
+
+    def _ended_child(self, task):
+        # The child may already exist even if a crash interrupted saving its ID on the parent.
+        child = self.jobs.by_key(self._session_key(task))
+        bound_id = task.get('session_job_id')
+        if bound_id and (not child or child['job_id'] != bound_id):
+            raise JobError('PROJECT_BINDING_INVALID', '无法核对原订单的执行记录。', 409)
+        if child:
+            execution = child.get('execution') or {}
+            if child['status'] not in TERMINAL or (execution.get('runtime_cleanup') or {}).get('tool_children_remaining', 0):
+                raise JobError('ORDER_STILL_RUNNING', '原执行尚未确认结束。', 409)
+            threads = {value for value in (execution.get('thread_id'), task.get('codex_thread_id'),
+                                           task.get('project_parent_thread')) if value}
+            if len(threads) > 1:
+                raise JobError('PROJECT_BINDING_INVALID', '原订单与项目对话不一致。', 409)
+        return child
+
     def _enqueue(self, task, batch, *, session=False):
         index = task['batches'].index(batch)
-        key = str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+('session' if session else str(index))))
+        key = self._session_key(task) if session else str(uuid.uuid5(uuid.NAMESPACE_URL, task['task_id']+':'+str(index)))
         previous = self.jobs.by_key(key)
         if previous:
             return previous
@@ -324,6 +470,9 @@ class TaskManager:
                 raise JobError('INPUT_CHANGED', '翻译 Prompt 发生变化。')
             if session:
                 shutil.copyfile(prompt_path, stage/'input/prompt_file.md')
+                if task.get('replaces_task_id'):
+                    with (stage/'input/prompt_file.md').open('a', encoding='utf-8') as out:
+                        out.write('\n本单为原位补交的新稿。原订单未交付的草稿作废，以本次原文和术语为准；后续沿用本次最终译法。\n')
             else:
                 (stage/'input/prompt_file.md').write_text(batch_prompt(prompt_path.read_text(encoding='utf-8-sig'), language_mode=plan.get('language_mode')), encoding='utf-8')
             filenames = {'source_file': 'source_file.json', 'prompt_file': 'prompt_file.md'}
@@ -420,6 +569,8 @@ class TaskManager:
             write_json(path, report)
             task.update(review_report_status=report['review_status'], review_issues_sha256=file_digest(path))
         task.update(status='completed', stage='translation_complete', result_sha256=file_digest(root/'result.json'), completed_at=now())
+        if (task.get('auto_recovery') or {}).get('state') == 'scheduled':
+            task['auto_recovery'].update(state='completed', completed_at=task['completed_at'])
         task['result_content_sha256'] = digest(canonical(result))
         self.store.save(task)
         self.cache.pop(task['task_id'], None)
@@ -495,7 +646,65 @@ class TaskManager:
             self.worker.wakeup.set()
         self.store.save(task)
 
+    def _auto_resume_predecessor(self, prior, waiter_id):
+        auto = prior.get('auto_recovery') or {}
+        if (prior['status'] != 'failed' or prior.get('interruption_reason') == 'manual_stop'
+                or (prior.get('error') or {}).get('code') not in ('WORKER_RESTARTED', 'WORKER_STOPPED')
+                or auto.get('state') == 'blocked'):
+            return prior
+        # The scheduler and manual controls share transition_lock. A waiting order never owns a slot.
+        key = None
+        try:
+            with self.store.lock:
+                self.store.require_repairable(prior)
+            child = self._ended_child(prior)
+            if not child or not service_interruption(child):
+                raise JobError('AUTO_RESUME_INELIGIBLE', '未确认原执行因服务中断而结束。', 409)
+            key = interruption_key(child)
+            if key in prior.get('resume_keys', []):
+                raise JobError('AUTO_RESUME_ALREADY_ATTEMPTED', '此次中断已尝试自动续翻。', 409)
+            queue_resume(self.settings, prior['task_id'], recovery_key=key, waiting_task_id=waiter_id)
+        except Exception as exc:
+            latest = self.store.get(prior['task_id'])
+            if latest['status'] == 'failed' and not (isinstance(exc,JobError) and exc.code == 'MAINTENANCE'):
+                error = exc.public() if isinstance(exc, JobError) else {
+                    'code':'AUTO_RECOVERY_FAILED', 'message':'原执行或草稿无法核实，请检查前单。'}
+                latest['auto_recovery'] = {'state':'blocked', 'incident_key':key, 'trigger_task_id':waiter_id,
+                                           'error':error, 'requested_at':now()}
+                self.store.save(latest)
+            return latest
+        return self.store.get(prior['task_id'])
+
     async def _advance_session(self, task):
+        prior = self.store.project_predecessor(task) if 'project_parent_thread' not in task else None
+        if prior:
+            if prior['status'] != 'completed':
+                if self.settings.port == 8788 and prior['status'] == 'failed' and (
+                        prior.get('error') or {}).get('code') in ('WORKER_RESTARTED', 'WORKER_STOPPED'):
+                    prior = await asyncio.to_thread(self._auto_resume_predecessor, prior, task['task_id'])
+                    if prior['status'] == 'queued':
+                        self.worker.wakeup.set()
+                stage = 'waiting_for_project_recovery' if prior['status'] in TASK_TERMINAL else 'waiting_for_project_order'
+                reason = None
+                if prior['status'] in ('stopped','stopping') or prior.get('interruption_reason') == 'manual_stop':
+                    reason = 'manual_stop'
+                elif (prior.get('auto_recovery') or {}).get('state') == 'blocked':
+                    reason = 'recovery_blocked'
+                elif prior.get('auto_recovery') and prior['status'] not in TASK_TERMINAL:
+                    reason = 'auto_resuming'
+                if (task['stage'] != stage or task.get('waiting_on_task_id') != prior['task_id']
+                        or task.get('waiting_on_reason') != reason):
+                    task['stage'] = stage
+                    task['waiting_on_task_id'] = prior['task_id']
+                    task['waiting_on_reason'] = reason
+                    self.store.save(task)
+                return
+            # An all-TM order has no model turn of its own.
+            thread = prior.get('codex_thread_id') or prior.get('project_parent_thread')
+            if prior['batches'] and not prior.get('codex_thread_id'):
+                raise JobError('PROJECT_THREAD_MISSING', '已完成的前单缺少对话编号。')
+            task['project_parent_thread'] = thread
+            self.store.save(task)
         if not task['batches']:
             task['self_review_status'] = 'not_required_all_tm'
             await asyncio.to_thread(self._finish, task, semantic_issues={})
@@ -532,8 +741,12 @@ class TaskManager:
         task['stage'] = {'reviewing':'project_self_review','complete':'delivery_check'}.get(progress.get('phase'), 'translating' if job['status']!='queued' else 'waiting_for_worker')
         task['self_review_status'] = 'running' if progress.get('phase')=='reviewing' else 'not_started'
         if job['status'] in ('failed','cancelled','interrupted'):
+            if self.settings.port == 8788 and task.get('project_id'):
+                task['interruption_reason'] = 'service_interruption' if service_interruption(job) else 'translation_failure'
             task.update(status='failed', stage='failed', error=job.get('error') or {
                 'code':'PROJECT_SESSION_INTERRUPTED','message':'整单 Codex 会话已中止，草稿保留且未自动重跑。'})
+            if task.get('auto_recovery') and not service_interruption(job):
+                task['auto_recovery'].update(state='blocked', error=task['error'])
             for batch in task['batches']:
                 batch['status'] = 'failed'
         elif job['status'] in ('completed','needs_review'):
@@ -588,17 +801,68 @@ class TaskManager:
         task.update(translated_rows=len(plan['pending']), cursor=len(task['batches']), self_review_status='completed')
         self._finish(task, semantic_issues=semantic_issues)
 
+    async def request_resume(self, task_id, key):
+        async with self.transition_lock:
+            task = self.store.get(task_id)
+            if key in task.get('resume_keys', []):
+                return task
+            if (self.settings.data_root/'.maintenance.json').exists():
+                raise JobError('MAINTENANCE', '服务正在维护，请稍后重试。', 503)
+            with self.store.lock:
+                self.store.require_repairable(task)
+            await asyncio.to_thread(self._resume_order, task, key)
+            self.wakeup.set()
+            self.worker.wakeup.set()
+            return self.store.get(task_id)
+
+    def _resume_order(self, task, key):
+        child = self._ended_child(task)
+        if child:
+            job_id = child['job_id']
+            execution = child.get('execution') or {}
+            thread = execution.get('thread_id') or task.get('codex_thread_id')
+            checkpoint = self.settings.data_root/'jobs'/job_id/'control/project-session-state.json'
+            if thread and child['status'] in ('failed', 'interrupted', 'cancelled') and checkpoint.is_file():
+                state = load_json(checkpoint.read_text(encoding='utf-8'))
+                if state.get('phase') != 'complete':
+                    if not task.get('session_job_id'):
+                        task['session_job_id'] = job_id
+                        self.store.save(task)
+                    queue_resume(self.settings, task['task_id'], recovery_key=key)
+                    return
+            if thread:
+                task['project_parent_thread'] = thread
+            task.setdefault('previous_session_jobs', []).append(job_id)
+            task['session_attempt'] = task.get('session_attempt', 0) + 1
+        for field in ('session_job_id', 'completed_at', 'execution_slot', 'session_progress', 'recent_actions', 'waiting_on_task_id'):
+            task.pop(field, None)
+        task.pop('interruption_reason', None)
+        task.pop('auto_recovery', None)
+        task.update(status='queued', stage='queued', error=None, translated_rows=0, cursor=0, self_review_status='not_started')
+        for batch in task['batches']:
+            batch.update(job_id=None, status='queued')
+        task.setdefault('resume_keys', []).append(key)
+        self.store.save(task)
+
+    def _stop_terminal(self, task):
+        if (self.settings.port == 8788 and task.get('project_id') and task['status'] == 'failed'
+                and (task.get('error') or {}).get('code') in ('WORKER_RESTARTED','WORKER_STOPPED')
+                and not task.get('replaced_by_task_id')):
+            task.update(status='stopped', stage='stopped', interruption_reason='manual_stop', completed_at=now())
+            self.store.save(task)
+        return task
+
     async def request_stop(self, task_id):
         # Serialize stop with session creation and final publication, including their threaded I/O.
         async with self.transition_lock:
             task = self.store.get(task_id)
             if task['status'] in TASK_TERMINAL:
-                return task
+                return self._stop_terminal(task)
             if not task.get('continuous_project_session'):
                 raise JobError('STOP_UNSUPPORTED', '该订单不属于整单会话模式。', 409)
             if task['status'] != 'stopping':
                 # Recover a child accepted just before a crash that lost the parent checkpoint.
-                key = str(uuid.uuid5(uuid.NAMESPACE_URL, task_id + ':session'))
+                key = self._session_key(task)
                 child = self.jobs.by_key(key)
                 if child:
                     task['session_job_id'] = child['job_id']
@@ -606,8 +870,10 @@ class TaskManager:
                         batch['job_id'] = child['job_id']
                     if child['status'] in TERMINAL:
                         await self.advance(task)
-                        return self.store.get(task_id)
+                        return self._stop_terminal(self.store.get(task_id))
                 task.update(status='stopping', stage='stopping', error=None)
+                if self.settings.port == 8788 and task.get('project_id'):
+                    task['interruption_reason'] = 'manual_stop'
                 self.store.save(task)
             self.wakeup.set()
             self._reconcile_stop(task)
@@ -625,6 +891,9 @@ class TaskManager:
                     task['error'] = job['error']
                     self.store.save(task)
                 return
+            execution = job.get('execution') or {}
+            if execution.get('thread_id'):
+                task['codex_thread_id'] = execution['thread_id']
         for batch in task['batches']:
             batch['status'] = 'stopped'
         task.update(status='stopped', stage='stopped', completed_at=now(), error=None)

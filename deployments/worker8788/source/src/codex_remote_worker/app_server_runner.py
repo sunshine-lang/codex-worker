@@ -247,28 +247,48 @@ class AppServerRunner(CodexRunner):
             error_path = root / 'logs/stderr.log'
             try:
                 resume = job.get('project_resume')
+                project_id = session.task.get('project_id') if session is not None and self.settings.port == 8788 else None
+                workspace = root
+                start_parameters = self.thread_parameters(root)
+                parent_thread = None
+                if project_id:
+                    workspace = self.settings.data_root/'project-workspaces'/digest(project_id.encode('utf-8'))
+                    (workspace/'work').mkdir(parents=True, exist_ok=True)
+                    start_parameters['cwd'] = str(workspace/'work')
+                    parent_thread = session.task.get('project_parent_thread')
+                    execution.update(project_id=project_id, project_workspace=str(workspace/'work'))
                 if resume:
                     session = getattr(self, 'project_session', None)
                     if (session is None or not session.restored or resume.get('job_id') != job['job_id']
                             or resume.get('task_id') != session.task['task_id'] or not resume.get('thread_id')
                             or file_digest(root/'control/project-session-state.json') != resume.get('checkpoint_sha256')):
                         raise JobError('INVALID_PROJECT_CHECKPOINT', '续翻会话与已保存检查点不匹配。')
-                    start_parameters = self.thread_parameters(root)
-                    parameters = {k:v for k,v in start_parameters.items() if k in {
-                        'approvalPolicy','permissions','config','cwd','developerInstructions','runtimeWorkspaceRoots',
-                        'environments','selectedCapabilityRoots'}}
-                    parameters.update(threadId=resume['thread_id'], excludeTurns=True)
                     execution['restored_project_session'] = session.progress()
+                expected_thread = resume['thread_id'] if resume else parent_thread
+                if expected_thread:
+                    parameters = {k:v for k,v in start_parameters.items() if k in {
+                        'approvalPolicy','permissions','config','cwd','developerInstructions','runtimeWorkspaceRoots'}}
+                    parameters.update(threadId=expected_thread, excludeTurns=True)
+                    if self.settings.port == 8788 and start_parameters.get('environments') == []:
+                        # Translation guides are delivered by the host with every order. Native resume
+                        # otherwise tries to discover AGENTS.md in a default local environment.
+                        parameters['config'] = {**parameters['config'], 'project_doc_max_bytes': 0}
+                    elif self.settings.port != 8788:
+                        parameters.update({k:start_parameters[k] for k in ('environments','selectedCapabilityRoots') if k in start_parameters})
+                    if project_id:
+                        stored = (await rpc.request('thread/read', {'threadId':expected_thread, 'includeTurns':False}))['thread']
+                        if stored.get('id') != expected_thread or Path(stored.get('cwd', '')).resolve() != (workspace/'work').resolve():
+                            raise JobError('PROJECT_BINDING_INVALID', '旧对话与项目工作目录不匹配。')
                     try:
                         response = await rpc.request('thread/resume', parameters)
-                        execution['resumed_from_thread_id'] = resume['thread_id']
+                        execution['resumed_from_thread_id'] = expected_thread
                     except AppServerRpcError as exc:
                         # This Codex build accepts environments=[] on thread/start,
                         # but not thread/resume. A resume can fail while preparing
                         # its default local environment, BEFORE any model turn.
                         # Rehydrate the verified ledger in a new environmentless
                         # thread; never weaken permissions or retry a model turn.
-                        if not (start_parameters.get('environments') == []
+                        if project_id or not (start_parameters.get('environments') == []
                                 and start_parameters.get('runtimeWorkspaceRoots') == []
                                 and exc.detail.startswith('error resuming thread:')
                                 and 'failed to prepare Windows sandbox:' in exc.detail
@@ -281,8 +301,10 @@ class AppServerRunner(CodexRunner):
                             thread_resume_error=redactor.text(exc.detail))
                         response = await rpc.request('thread/start', start_parameters)
                 else:
-                    response = await rpc.request('thread/start', self.thread_parameters(root))
-                thread_id = verify_thread(response, configured, root)
+                    response = await rpc.request('thread/start', start_parameters)
+                thread_id = verify_thread(response, configured, workspace)
+                if project_id and (response.get('runtimeWorkspaceRoots') != [] or (expected_thread and expected_thread != thread_id)):
+                    raise JobError('PROJECT_THREAD_MISMATCH', '未确认原项目对话或受限工作区。')
                 rebuilt = execution.get('thread_recovery_mode') == 'checkpoint_rehydrate'
                 if resume and not rebuilt and thread_id != resume['thread_id']:
                     raise JobError('INVALID_PROJECT_CHECKPOINT', 'App Server 未恢复指定原会话。')
@@ -335,12 +357,17 @@ class AppServerRunner(CodexRunner):
                         if data.get('threadId') != thread_id:
                             raise JobError('INVALID_TRACE', '收到不属于当前任务的会话事件。')
                         event_turn = data.get('turnId') or (data.get('turn') or {}).get('id')
-                        if event_turn is not None and event_turn != turn_id:
-                            raise JobError('INVALID_TRACE', '收到不属于当前任务的轮次事件。')
-                        execution['event_count'] += 1
                         if rpc.transport_bytes - transport_start > self.settings.max_log_bytes:
                             execution['trace_complete'] = False
                             raise JobError('LIMIT_EXCEEDED', '执行事件超过日志限制。')
+                        if event_turn is not None and event_turn != turn_id:
+                            # Native resume can replay the last turn's usage after the new turn starts.
+                            if (execution.get('resumed_from_thread_id') == thread_id and
+                                    method == 'thread/tokenUsage/updated' and 'id' not in event):
+                                execution['historical_usage_events'] = execution.get('historical_usage_events', 0) + 1
+                                continue
+                            raise JobError('INVALID_TRACE', '收到不属于当前任务的轮次事件。')
+                        execution['event_count'] += 1
                         if method == 'item/tool/call':
                             handler = getattr(self, 'project_tool_result', None)
                             if handler is None:

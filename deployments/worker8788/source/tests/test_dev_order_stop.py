@@ -68,7 +68,8 @@ def test_same_name_orders_own_single_lanes_and_stop_waits_for_cleanup(settings, 
                 data = {'project_name':'same name', 'segments':[row(i) for i in range(33)]}
 
                 async def submit(h):
-                    r = await c.post('/v1/tasks', files=uploads(data), data={'options':'{}'}, headers=h)
+                    packet = dict(data, project_name=h['Idempotency-Key']) if port == 8788 else data
+                    r = await c.post('/v1/tasks', files=uploads(packet), data={'options':'{}'}, headers=h)
                     r.raise_for_status()
                     return r.json()['task_id']
 

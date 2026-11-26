@@ -8,7 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
 from typing import Literal
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from starlette.datastructures import UploadFile
 
 from .common import JobError, ROLES
@@ -21,8 +21,10 @@ from .translation_tasks import BatchPolicy, TaskManager, TASK_CONTRACT, public_t
 
 
 class TranslationTaskOptions(Options):
+    project_id: str | None = Field(default=None, min_length=1, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]*$')
     tm_policy: Literal['contextual-v2'] | None = None
     language_mode: Literal['per-segment'] | None = None
+    replaces_task_id: str | None = Field(default=None, pattern=r'^task_[a-f0-9]{32}$')
 
 
 def install_translation_tasks(app, settings, authorized, *, policy=None):
@@ -45,7 +47,11 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
 
     @router.get('/capabilities')
     async def capabilities():
-        return {**({'task_stop': True, 'same_name_parallel': True} if settings.independent_whole_orders else {}),
+        return {**({'task_stop': True, 'same_name_parallel': settings.port != 8788} if settings.independent_whole_orders else {}),
+                **({'project_thread_continuity': 'source_file.project_name', 'explicit_project_id_supported': True,
+                    'strict_project_order': True, 'task_resume': True, 'replace_in_place': True,
+                    'auto_resume_interrupted_predecessor': True}
+                   if settings.port == 8788 and settings.continuous_project_session else {}),
                 'contract': TASK_CONTRACT, 'whole_request_submission': True, 'tm100_routing': True,
                 'tm_policies': [CONTEXTUAL_TM] if settings.continuous_project_session else [],
                 'language_modes': [PER_SEGMENT],
@@ -82,15 +88,21 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
                     task_options = TranslationTaskOptions.model_validate_json(form['options'])
                     options = Options(timeout_seconds=task_options.timeout_seconds)
                 except ValidationError:
-                    raise JobError('INVALID_OPTIONS', '请检查 timeout_seconds、tm_policy 和 language_mode。') from None
+                    raise JobError('INVALID_OPTIONS', '请检查 timeout_seconds、tm_policy、language_mode 和 project_id。') from None
                 ensure_space(settings)
                 manifest = await receive_files(settings, {role: form[role] for role in ROLES}, stage)
                 if manager.store.by_key(key) is None:
                     ready = await app.state.worker.ready()
                     if not ready.get('ready'):
                         raise JobError('NOT_READY', ready.get('message', 'Worker 尚未就绪。'), 503)
-                task, reused = await asyncio.to_thread(manager.accept, task_id, stage, manifest, options, key,
-                                                     tm_policy=task_options.tm_policy, language_mode=task_options.language_mode)
+                submit_call = asyncio.to_thread(manager.accept, task_id, stage, manifest, options, key,
+                                               tm_policy=task_options.tm_policy, language_mode=task_options.language_mode,
+                                               project_id=task_options.project_id, replaces_task_id=task_options.replaces_task_id)
+                if task_options.replaces_task_id:
+                    async with manager.transition_lock:
+                        task, reused = await submit_call
+                else:
+                    task, reused = await submit_call
                 manager.wakeup.set()
                 return JSONResponse({**public_task(task), 'reused_submission': reused}, status_code=200 if reused else 202)
         finally:
@@ -111,6 +123,15 @@ def install_translation_tasks(app, settings, authorized, *, policy=None):
         async def stop_task(task_id: str):
             task = await app.state.translation_tasks.request_stop(identifier(task_id))
             return JSONResponse(public_task(task), status_code=202 if task['status'] == 'stopping' else 200)
+
+    if settings.port == 8788 and settings.continuous_project_session:
+        @router.post('/{task_id}/resume')
+        async def resume_task(task_id: str, request: Request):
+            try:
+                key = str(uuid.UUID(request.headers.get('idempotency-key', '')))
+            except ValueError:
+                raise JobError('INVALID_IDEMPOTENCY_KEY', '恢复请求的 Idempotency-Key 必须为 UUID。') from None
+            return JSONResponse(public_task(await app.state.translation_tasks.request_resume(identifier(task_id), key)))
 
     @router.get('/{task_id}/result')
     async def result(task_id: str):

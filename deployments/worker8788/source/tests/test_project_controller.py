@@ -150,7 +150,8 @@ class ResumeRpc(ProjectRpc):
             self.calls.append((method,params));self.thread_id=params['threadId']
             self.cwd=self.runner.project_session.root/'work'
             assert 'dynamicTools' not in params and 'ephemeral' not in params
-            assert params['environments']==[] and params['runtimeWorkspaceRoots']==[]
+            assert 'environments' not in params and 'selectedCapabilityRoots' not in params
+            assert params['config']['project_doc_max_bytes']==0 and params['runtimeWorkspaceRoots']==[]
             if self.mode=='resume_failed':
                 raise JobError('APP_SERVER_RPC_ERROR','fixture resume refused before model startup')
             if self.mode.startswith('resume_environment_unavailable') or self.mode=='resume_other_error':
@@ -161,6 +162,9 @@ class ResumeRpc(ProjectRpc):
             return {'thread':{'id':self.thread_id},'activePermissionProfile':{'id':'translation'},
                     'approvalPolicy':'never','model':'server/default-model','modelProvider':'fixture',
                     'reasoningEffort':'high','cwd':params['cwd']}
+        if method=='turn/start' and self.mode=='same_thread':
+            self.queues[params['threadId']].put_nowait({'method':'thread/tokenUsage/updated',
+                'params':{'threadId':params['threadId'],'turnId':'previous-order-turn'}})
         result=await super().request(method,params,**kw)
         if method=='thread/start':
             self.thread_id='recovered-'+self.thread_id
@@ -173,7 +177,7 @@ class ResumeRpc(ProjectRpc):
 @pytest.mark.parametrize('recovery_mode',['same_thread','resume_environment_unavailable',
     'resume_environment_unavailable_then_stall','resume_other_error'])
 def test_failed_project_resumes_same_thread_and_retains_saved_draft(settings,monkeypatch,recovery_mode,project_markdown_runtime):
-    settings=settings.model_copy(update={'project_context_enabled':True,'continuous_project_session':True})
+    settings=settings.model_copy(update={'port':8788,'project_context_enabled':True,'continuous_project_session':True})
     settings.doc_converter.write_bytes(b'fixture converter')
     monkeypatch.setattr(TextAppServerRunner,'baseline_ready',lambda _: {'ready':True,'service_version':'fixture','codex_version':'fixture','tools':{}})
     runner=TextAppServerRunner(settings);runner.rpc=ProjectRpc(runner,'bad_review');runner.started=True;runner.generation=1
@@ -181,7 +185,7 @@ def test_failed_project_resumes_same_thread_and_retains_saved_draft(settings,mon
         app=create_app(settings,runner=runner)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://worker',headers=headers(settings)) as c:
-                response=await c.post('/v1/tasks',files=uploads({'project_name':'resume','segments':[row(i,i==1) for i in range(4)]}),data={'options':'{}'})
+                response=await c.post('/v1/tasks',files=uploads([row(i,i==1) for i in range(4)]),data={'options':'{}'})
                 task_id=response.json()['task_id'];failed=await wait_for_task(c,task_id)
                 assert failed['status']=='failed' and failed['error']['code']=='PROJECT_NO_PROGRESS'
         state=(runner.project_session.root/'control/project-session-state.json').read_bytes()
@@ -232,5 +236,5 @@ def test_failed_project_resumes_same_thread_and_retains_saved_draft(settings,mon
                     assert audit['restored_project_session']['draft_segments']==3
                     assert not audit['history_restored']
                 result=(await c.get(final['result_path'])).json()
-                assert len(result['segments'])==4
+                assert len(result)==4
     asyncio.run(fail_then_resume())

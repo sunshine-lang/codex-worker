@@ -45,7 +45,7 @@ class Rpc:
             self.thread_id = 'thread-' + str(self.threads)
             return {'thread': {'id': self.thread_id}, 'activePermissionProfile': {'id':'translation'},
                 'approvalPolicy':'never','model':'server/default-model','modelProvider':'fixture',
-                'reasoningEffort':'high','cwd':params['cwd']}
+                'reasoningEffort':'high','cwd':params['cwd'], 'runtimeWorkspaceRoots':params.get('runtimeWorkspaceRoots', [])}
         if method == 'turn/start':
             self.turns += 1
             self.turn_id = 'turn-' + str(self.turns)

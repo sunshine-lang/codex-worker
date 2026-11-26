@@ -14,14 +14,37 @@ from .project_session import ProjectSession
 from .runner import codex_config_digest
 
 
-def queue_resume(settings, task_id):
+def service_interruption(job):
+    return (job.get('status') == 'interrupted' and job.get('cancel_reason') != 'user'
+            and (job.get('error') or {}).get('code') in ('WORKER_RESTARTED', 'WORKER_STOPPED'))
+
+
+def interruption_key(job):
+    incident = ':'.join((job['job_id'], job['started_at'], job['completed_at']))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, '8788:auto-resume:'+incident))
+
+
+def reconciled_after_restart(job):
+    proof, process = job.get('restart_cleanup') or {}, job.get('process') or {}
+    return bool(service_interruption(job) and proof.get('verified_at') and job.get('started_at')
+                and proof.get('started_at') == job['started_at'] and proof.get('process') == process
+                and process.get('pid') and process.get('created_at')
+                and re.fullmatch(r'Local\\CodexWorkerAppServer8788-[0-9a-f]{32}', process.get('job_object', '')))
+
+
+def queue_resume(settings, task_id, *, recovery_key=None, waiting_task_id=None):
     if not re.fullmatch(r'task_[0-9a-f]{32}', task_id):
         raise JobError('INVALID_TASK_ID', '任务编号格式无效。')
     data = settings.data_root.resolve(strict=True)
     marker = data/'.maintenance.json'
     operation = uuid.uuid4().hex
-    with marker.open('x', encoding='utf-8') as stream:
-        json.dump({'operation':operation, 'reason':'explicit checkpoint resume', 'task_id':task_id}, stream)
+    online = recovery_key is not None
+    if online:
+        if settings.port != 8788 or marker.exists():
+            raise JobError('MAINTENANCE', '8788 维护结束后再恢复此单。', 503)
+    else:
+        with marker.open('x', encoding='utf-8') as stream:
+            json.dump({'operation':operation, 'reason':'explicit checkpoint resume', 'task_id':task_id}, stream)
     committed = False
     verified = False
     db = None
@@ -29,7 +52,7 @@ def queue_resume(settings, task_id):
         db = sqlite3.connect(data/'jobs.sqlite3', timeout=10, isolation_level=None)
         db.execute('ATTACH DATABASE ? AS tasks_db', (str(data/'tasks.sqlite3'),))
         db.execute('BEGIN IMMEDIATE')
-        for table in ('jobs', 'tasks_db.tasks'):
+        for table in (() if online else ('jobs', 'tasks_db.tasks')):
             terminal = TERMINAL | {'stopped'} if table == 'tasks_db.tasks' else TERMINAL
             if any(status not in terminal for (status,) in db.execute('SELECT DISTINCT status FROM '+table)):
                 raise JobError('WORKER_BUSY', '存在未结束任务，请等空闲后恢复。')
@@ -42,6 +65,16 @@ def queue_resume(settings, task_id):
             raise JobError('INVALID_PROJECT_CHECKPOINT', '此任务不是可恢复的整单会话。')
         job_row = db.execute('SELECT record FROM jobs WHERE job_id=?', (job_id,)).fetchone()
         job = json.loads(job_row[0]) if job_row else {}
+        if waiting_task_id is not None:
+            waiter = db.execute('SELECT record FROM tasks_db.tasks WHERE task_id=?', (waiting_task_id,)).fetchone()
+            waiter = json.loads(waiter[0]) if waiter else {}
+            if (not online or not service_interruption(job) or task['status'] != 'failed'
+                    or task.get('interruption_reason') == 'manual_stop' or not job.get('started_at') or not job.get('completed_at')
+                    or recovery_key != interruption_key(job) or recovery_key in task.get('resume_keys', [])
+                    or not task.get('project_id') or task['project_id'] != waiter.get('project_id')
+                    or waiter.get('previous_project_task_id') != task.get('order_position_id',task_id)
+                    or waiter.get('status') != 'queued' or waiter.get('session_job_id')):
+                raise JobError('AUTO_RESUME_INELIGIBLE', '未确认系统中断或同项目后单的等待关系。', 409)
         execution = job.get('execution') or {}
         prior_resume = job.get('project_resume') or {}
         # After an environmentless checkpoint rehydration, the next recovery
@@ -53,11 +86,15 @@ def queue_resume(settings, task_id):
             prior_thread = execution['thread_id']
         thread_ids = {v for v in (execution.get('thread_id'), task.get('codex_thread_id'), prior_thread) if v}
         thread_id = next(iter(thread_ids)) if len(thread_ids)==1 else None
-        if (task['status'] not in ('failed','interrupted') or job.get('status') not in ('failed','interrupted')
+        task_states = ('failed', 'stopped') if online else ('failed', 'interrupted')
+        job_states = ('failed', 'interrupted', 'cancelled') if online else ('failed', 'interrupted')
+        if (task['status'] not in task_states or job.get('status') not in job_states
+                or task.get('replaced_by_task_id') or (online and not task.get('project_id'))
                 or job.get('request_id') != task_id or not thread_id
                 or (prior_resume and (prior_resume.get('job_id') != job_id or prior_resume.get('task_id') != task_id))):
             raise JobError('INVALID_PROJECT_CHECKPOINT', '只能显式恢复绑定一致的失败或中断会话。')
-        if (execution.get('runtime_cleanup') or {}).get('tool_children_remaining') != 0:
+        if ((execution.get('runtime_cleanup') or {}).get('tool_children_remaining') != 0
+                and not (online and reconciled_after_restart(job))):
             raise JobError('PROCESS_CLEANUP_FAILED', '旧执行进程未确认清理，不能恢复。')
         if codex_config_digest(settings) != job.get('codex_config_sha256'):
             raise JobError('CODEX_CONFIG_CHANGED', '模型配置与原任务不同，未重排任务。')
@@ -67,10 +104,12 @@ def queue_resume(settings, task_id):
                 path = (directory/'input'/entry['filename']).resolve(strict=True)
                 if not path.is_relative_to((directory/'input').resolve()) or file_digest(path) != entry['sha256']:
                     raise JobError('INPUT_CHANGED', '原始资料与提交记录不同，未恢复。')
+        checkpoint = root/'control/project-session-state.json'
+        if not checkpoint.is_file():
+            raise JobError('INVALID_PROJECT_CHECKPOINT', '缺少已保存的草稿检查点。')
         session = ProjectSession(settings, root)
         if not session.restored or session.phase not in ('translating','reviewing'):
             raise JobError('INVALID_PROJECT_CHECKPOINT', '没有可续翻的草稿检查点。')
-        checkpoint = root/'control/project-session-state.json'
         checkpoint_sha = file_digest(checkpoint)
         backup = data/'maintenance-backups'/('project-resume-'+operation)
         backup.mkdir(parents=True)
@@ -82,13 +121,23 @@ def queue_resume(settings, task_id):
         if file_digest(checkpoint) != checkpoint_sha or file_digest(backup/'control/project-session-state.json') != checkpoint_sha:
             raise JobError('INPUT_CHANGED', '备份期间检查点变化，未恢复。')
         stamp = now()
+        job.pop('cancel_reason', None)
+        if online:
+            task.setdefault('resume_keys', []).append(recovery_key)
+            task.pop('completed_at', None)
+            task.pop('interruption_reason', None)
+            task.pop('auto_recovery', None)
+        if waiting_task_id:
+            task['auto_recovery'] = {'state':'scheduled','incident_key':recovery_key,
+                                     'trigger_task_id':waiting_task_id, 'requested_at':stamp,
+                                     'restored_rows':len(session.values)}
         job.setdefault('execution_history', []).append({'execution':execution, 'error':job.get('error'),
-            'completed_at':job.get('completed_at'), 'backup':str(backup)})
+            'completed_at':job.get('completed_at'), 'backup':str(backup), 'restart_cleanup':job.pop('restart_cleanup', None)})
         job.update(status='queued', stage='queued', started_at=None, completed_at=None, updated_at=stamp,
             error=None, qa=None, artifacts=[], process=None,
             project_resume={'task_id':task_id, 'job_id':job_id, 'thread_id':thread_id,
                             'checkpoint_sha256':checkpoint_sha, 'requested_at':stamp, 'backup':str(backup)},
-            execution={**execution, 'project_session':session.progress(), 'turn_completed':False, 'exit_code':None})
+            execution={'thread_id':thread_id, 'project_session':session.progress(), 'turn_completed':False, 'exit_code':None})
         task.update(status='queued', stage='waiting_for_worker', error=None, updated_at=stamp,
             codex_thread_id=thread_id,
             translated_rows=len(session.values), session_progress=session.progress(),
@@ -99,8 +148,9 @@ def queue_resume(settings, task_id):
         db.execute('UPDATE tasks_db.tasks SET status=?,record=? WHERE task_id=?', ('queued',json.dumps(task),task_id))
         db.execute('COMMIT')
         committed = True
-        verified = (db.execute('SELECT status FROM jobs WHERE job_id=?',(job_id,)).fetchone()[0]=='queued'
-                    and db.execute('SELECT status FROM tasks_db.tasks WHERE task_id=?',(task_id,)).fetchone()[0]=='queued')
+        # The online worker may already have claimed this job after COMMIT.
+        verified = online or (db.execute('SELECT status FROM jobs WHERE job_id=?',(job_id,)).fetchone()[0]=='queued'
+                              and db.execute('SELECT status FROM tasks_db.tasks WHERE task_id=?',(task_id,)).fetchone()[0]=='queued')
         if not verified:
             raise RuntimeError('Resume state verification failed; maintenance marker retained.')
         result = {'task_id':task_id, 'job_id':job_id, 'thread_id':thread_id,
@@ -113,7 +163,7 @@ def queue_resume(settings, task_id):
             if db.in_transaction:
                 db.execute('ROLLBACK')
             db.close()
-        if not committed or verified:
+        if not online and (not committed or verified):
             if marker.exists() and json.loads(marker.read_text(encoding='utf-8')).get('operation')==operation:
                 marker.unlink()
 

@@ -1,4 +1,4 @@
-param([ValidateSet('IdentityProbe','ProtocolProbe','ProtocolProbeNoEnvironment','Doctor','Serve')][string]$Mode='Serve')
+param([ValidateSet('IdentityProbe','ProtocolProbe','ProtocolProbeNoEnvironment','Doctor','Serve','DesktopStart','DesktopStop')][string]$Mode='Serve')
 $ErrorActionPreference='Stop'
 $root='C:\CodexRemoteWorker-AppServer-8788';$data='C:\CodexWorkerData-AppServer-8788'
 $base='C:\CodexRemoteWorker';$configPath=Join-Path $root 'config.trial.json'
@@ -25,12 +25,27 @@ while ($true) {
   $control=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None')
   break
  } catch [IO.IOException] {
-  if ($Mode -ne 'Serve' -or [datetime]::UtcNow -ge $lockDeadline) { throw }
+  if ($Mode -notin 'Serve','DesktopStart','DesktopStop' -or [datetime]::UtcNow -ge $lockDeadline) { throw }
   Start-Sleep -Milliseconds 500
  }
 }
 try{
+ $stopped=Join-Path $data '.desktop-stopped'
+ if($Mode -eq 'DesktopStop'){
+  $receipt=Get-Content -LiteralPath (Join-Path $data 'serve.process.json') -Raw -ErrorAction SilentlyContinue|ConvertFrom-Json
+  $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8788 -ErrorAction SilentlyContinue)
+  if($listeners | Where-Object {$_.OwningProcess -ne $receipt.ProcessId}){throw '8788 listener does not match its startup receipt.'}
+  & $baseConfig.tool_python -B (Join-Path $root 'desktop\settings8788.py') --desktop-stop
+  if($LASTEXITCODE -ne 0){throw '8788 desktop stop failed.'}
+  if(Get-NetTCPConnection -State Listen -LocalPort 8788 -ErrorAction SilentlyContinue){throw '8788 is still listening.'}
+  return
+ }
+ if($Mode -eq 'DesktopStart'){
+  [IO.File]::Delete($stopped)
+  $Mode='Serve'
+ }
  if($Mode -eq 'Serve'){
+  if(Test-Path -LiteralPath $stopped){return}
   $entrypoint=[regex]::Escape((Join-Path $root 'packaged-background.py'))+'"?\s+serve(?:\s|$)'
   if(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object {$_.CommandLine -match $entrypoint}){return}
   if(Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue){throw 'Port 8788 already in use; no process stopped'}
@@ -46,7 +61,6 @@ try{
   if((Test-Path -LiteralPath "$profileKey.bak") -or -not (Test-Path -LiteralPath (Join-Path $profileDir 'NTUSER.DAT') -PathType Leaf)){throw 'The registered Windows profile of the 8788 service account needs repair.'}
  }
  $launch=Start-Process -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $root 'launch-packaged-user.ps1'),'-Mode',$verb,'-OperationId',$operation) -Credential $credential -LoadUserProfile:$loadProfile -Environment $environment -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $data 'package-activation.stdout.log') -RedirectStandardError (Join-Path $data 'package-activation.stderr.log') -PassThru
- if(-not$launch.WaitForExit(20000)){throw 'Official package activation timed out'}
  $deadline=[DateTime]::UtcNow.AddSeconds(150)
  do{
   $receipt=$null;$record=$null
@@ -54,13 +68,16 @@ try{
   try{$receipt=Get-Content -LiteralPath (Join-Path $data ($verb+'.exit.json')) -Raw -ErrorAction Stop|ConvertFrom-Json}catch{}
   if($Mode -eq 'Serve' -and $record.operation_id -eq $operation){$record|ConvertTo-Json -Compress;return}
   if($receipt.operation_id -eq $operation){break}
-  if($launch.ExitCode -ne 0 -and $record.operation_id -ne $operation){
+  if($launch.HasExited -and $launch.ExitCode -ne 0 -and $record.operation_id -ne $operation){
    Get-Content -LiteralPath (Join-Path $data 'package-activation.stderr.log') -Tail 15
    throw "Official package activation failed (exit $($launch.ExitCode))."
   }
   Start-Sleep -Milliseconds 200
  }while([DateTime]::UtcNow -lt $deadline)
- if($receipt.operation_id -ne $operation){throw 'Waiting for matching fixed-probe receipt timed out; do not duplicate launch'}
+ if($receipt.operation_id -ne $operation){
+  if(!$launch.HasExited){try{$launch.Kill()}catch [InvalidOperationException]{if(!$launch.HasExited){throw}}}
+  throw 'Waiting for matching package startup receipt timed out.'
+ }
  $out=Get-Content -LiteralPath (Join-Path $data ($verb+'.stdout.log')) -Raw
  try{$report=$out|ConvertFrom-Json}catch{$report=$null}
  if($receipt.exit_code -ne 0 -or -not$report.passed){
@@ -68,4 +85,4 @@ try{
   throw ('Packaged trial check failed: '+$Mode)
  }
  $report|ConvertTo-Json -Depth 10
-}finally{$control.Dispose()}
+}finally{if($launch){$launch.Dispose()};$control.Dispose()}

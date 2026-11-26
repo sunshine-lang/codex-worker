@@ -1,5 +1,6 @@
 $ErrorActionPreference='Stop'
 $data='C:\CodexWorkerData-AppServer-8788'
+if(Test-Path -LiteralPath (Join-Path $data '.desktop-stopped')){exit 0}
 # Never kill a listener or restart a busy/unhealthy process automatically.
 if(Get-NetTCPConnection -LocalPort 8788 -State Listen -ErrorAction SilentlyContinue){exit 0}
 $existing=Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.CommandLine -like '*CodexRemoteWorker-AppServer-8788*packaged-background.py*serve*' }
