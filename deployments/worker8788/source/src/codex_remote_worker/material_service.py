@@ -15,8 +15,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .common import JobError, canonical, digest, now, safe_name, write_json
-from .material_agent import MaterialSession, run_agent
-from .material_documents import DOCUMENT_TYPES, MAX_DELIVERY, standalone_markdown
+from .material_agent import MaterialSession, run_agent, run_material_io
+from .material_documents import DOCUMENT_TYPES, MAX_DELIVERY
+from .material_references import resolve_references
 from .store import InstanceLock, Store
 
 LOG = logging.getLogger(__name__)
@@ -85,13 +86,18 @@ def accept(store, root, obj, capacity):
         return store.accept(record, stage, root / "tasks" / task, capacity)
 
 
-def publish_result(folder, job, prompt):
-    remaining = MAX_DELIVERY - len(prompt.encode("utf-8"))
+def publish_result(folder, session, prompt):
+    try:
+        prompt = resolve_references(prompt, session.docs)
+    except ValueError as exc:
+        raise JobError("INCOMPLETE_DELIVERY", str(exc)) from exc
+    if session.markdown_bytes + len(prompt.encode("utf-8")) > MAX_DELIVERY:
+        raise JobError("LIMIT_EXCEEDED", "项目 Prompt 与 Markdown 合计超过 96 MiB。")
     docs = []
-    for index, doc in enumerate(job["documents"]):
-        markdown = standalone_markdown(folder / "documents" / str(index), remaining)
-        docs.append({"source_filename": doc["source_filename"], "markdown": markdown})
-        remaining -= len(markdown.encode("utf-8"))
+    for doc in session.docs:
+        name = doc["markdown_filename"]
+        markdown = (folder / "markdown" / name).read_bytes().decode("utf-8")
+        docs.append({"source_filename": doc["source_filename"], "markdown_filename": name, "markdown": markdown})
     write_json(folder / "result.json", {"translation_prompt": prompt, "documents_markdown": docs})
 
 
@@ -114,16 +120,12 @@ def create_material_app(settings, agent=run_agent):
             try:
                 touch(execution_slot=slot, recent_action="已取得执行通道")
                 async with asyncio.timeout(7200):
+                    await session.prepare()
                     prompt = await agent(settings, folder, session)
                 if not isinstance(prompt, str) or not prompt.strip() or not session.reading_complete:
                     raise JobError("INCOMPLETE_DELIVERY", "Prompt 或逐份原文核对尚未完成。")
                 session.update("validating_result", "正在核对并发布本次产物")
-                publication = asyncio.create_task(asyncio.to_thread(publish_result, folder, job, prompt))
-                try:
-                    await asyncio.shield(publication)
-                except asyncio.CancelledError:
-                    await publication
-                    raise
+                await run_material_io(publish_result, folder, session, prompt)
                 touch(status="completed", stage="completed", recent_action="交付文件已保存", current_file=None)
             except asyncio.CancelledError:
                 # Startup reconciles an atomically published result or marks this task interrupted.
@@ -187,7 +189,7 @@ def create_material_app(settings, agent=run_agent):
     async def ready(include_channels: bool = False):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
                   "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES,
-                  "format_detection": "content"}
+                  "format_detection": "content", "markdown_filenames": True}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():

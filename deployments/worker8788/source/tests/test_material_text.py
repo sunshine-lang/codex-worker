@@ -29,7 +29,7 @@ def test_csv_and_plain_materials_share_one_task(tmp_path):
     csv_text = 'ID,cn,target\r\n0007,"line one,\r\nline ""two"" <A> & |",\r\n\r\n0099,=2+2,'
     rules = '  要求一\r\n\r\n要求二\t \r\n```\r\n![原文](assets/no-file.png)\r\n'
     docs = [attachment("原文.CSV", codecs.BOM_UTF8 + csv_text.encode()), attachment("客户要求.自定义", rules.encode("gb18030"))]
-    prompt = example_prompt("按原记录引用客户要求。")
+    prompt = example_prompt("[材料](material:0) 和 [材料](material:1)，按原记录引用客户要求。")
 
     async def agent(_settings, _root, session):
         for index in range(len(session.docs)):
@@ -49,8 +49,8 @@ def test_csv_and_plain_materials_share_one_task(tmp_path):
         wait(client, task, "completed")
         result = client.get(f"{ROUTE}/{task}/result", headers=AUTH).json()
         assert client.post(ROUTE, headers=AUTH, json=payload).json()["task_id"] == task
-    assert result["translation_prompt"] == prompt
     table, note = result["documents_markdown"]
+    assert all("[`" + d["markdown_filename"] + "`]" in result["translation_prompt"] for d in (table, note))
     assert [table["source_filename"], note["source_filename"]] == [d["source_filename"] for d in docs]
     parts = re.split(r"(?m)^## 记录 (\d+)（原文件第 ([\d–]+) 行）\n\n", table["markdown"])
     assert parts[1::3] == ["1", "2", "3", "4"]

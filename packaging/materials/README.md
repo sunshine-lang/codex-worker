@@ -40,6 +40,12 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 3. 在原 Langflow 画布同步材料网关代码及聊天附件字段定义，保留原流程 ID、Worker 地址和令牌。网关读取已上传文件时继续核对路径所属用户或流程。[节点源码](../../integrations/materials/component.py) · [画布文件](../../integrations/materials/flow.json)
 4. 可将六类原件放在同一笔 `documents` 中。任务完成后应收到一个 `translation_prompt` 和六项 `documents_markdown`。CSV 可按原记录和物理行号复核，TXT 应保留正文及空行。无法读取的附件会在任务状态中标明原文件名和原因。旧联调客户端如仍在本机限制附件后缀，可使用仓库调用脚本。[调用脚本](../../integrations/materials/call.py)
 
+## Markdown 材料文件名与升级验收
+
+更新材料分支、运行安装和启动命令后，通过带材料令牌的 `GET /v1/ready` 确认 `markdown_filenames` 为 `true`。新任务先转写全部附件，含图的独立 Markdown 也准备好后才启动模型。任一附件转换失败时，状态保留失败原件名。
+
+每项 `documents_markdown` 返回三个字段：`source_filename` 为上传原名，`markdown_filename` 为交付名，`markdown` 为正文。下游用返回的交付名保存或挂载，把 Prompt 与全部材料放在同一目录。例如 `说明.docx` 和 `说明.pdf` 返回 `01-说明.md`、`02-说明.md`。目录与正文里的本单材料链接均指向对应 Markdown，可在链接后保留原页码、工作表或行号。历史任务保持原文档和 Prompt，读取历史 JSON 的客户端应兼容缺少新增字段。[联调 Python 示例](../../integrations/materials/material_client.py)
+
 ## Langflow 与上游契约
 
 流程是请求输入 → 项目材料 Worker → 任务响应。可移植的画布在 [flow.json](../../integrations/materials/flow.json)，节点源码在 [component.py](../../integrations/materials/component.py)。导入新实例后，在第二个节点配置地址与令牌。运行入口使用 `POST /api/v1/run/<flow_id>`，以聊天输入传入序列化的业务 JSON，输出组件是 `ChatOutput-Materials`。
@@ -67,7 +73,7 @@ Langflow 也可接收当前调用者已上传的文件，在附件对象里以 `
 |---|---|---|---|
 | 提交 | 上述 JSON | `POST /v1/material-tasks` | HTTP 202，取得 `task_id` 和 `submission_key`。同键同内容复用原任务，同键改内容返回 409。 |
 | 查询 | `{"operation":"status","task_id":"mat_…"}` | `GET /v1/material-tasks/{task_id}` | 排队、执行、完成或失败状态，同时返回阶段、当前文件、文档完成数、最近动作与更新时间。 |
-| 取回 | `{"operation":"result","task_id":"mat_…"}` | `GET /v1/material-tasks/{task_id}/result` | 完成后返回按一级标题组织的 Markdown 字符串 `translation_prompt` 和 `documents_markdown` 数组。数组顺序与输入一致，元素含 `source_filename` 和 `markdown`。[完整的章节顺序及示例](../../README.md#快速试用) |
+| 取回 | `{"operation":"result","task_id":"mat_…"}` | `GET /v1/material-tasks/{task_id}/result` | 完成后返回按一级标题组织的 Markdown 字符串 `translation_prompt` 和 `documents_markdown` 数组。数组顺序与输入一致，新版元素含 `source_filename`、`markdown_filename` 和 `markdown`。[完整的章节顺序及示例](../../README.md#快速试用) |
 
 Worker 请求使用 `Authorization: Bearer <专用令牌>`。运行 Langflow 时要读取任务响应 JSON 的 `error.code`，Langflow 外层的 HTTP 200 只表示画布完成了本次调用。上传已接收但网络断开时，用相同提交键和同一组原件重试。已获得任务号则直接查询。提供了附件但解析失败时，状态中会给出失败文件和错误，结果接口不会当作空附件交付。
 
@@ -78,7 +84,7 @@ Worker 请求使用 `Authorization: Bearer <专用令牌>`。运行 Langflow 时
 ~~~powershell
 python integrations/materials/call.py submit --project-name 西门子 --business-tag IM --source-language en --target-language zh-CN --requirements "设备手册" --document "EC通用准则.doc" --document "西门子指南.docx"
 python integrations/materials/call.py status <返回的任务号>
-python integrations/materials/call.py result <返回的任务号> --output result.json
+python integrations/materials/call.py result <返回的任务号> --output result.json --save-markdown
 ~~~
 
 检查两份 Markdown 是否对应原文件、术语表的行列和例外是否保留。图片放在原位置并内嵌到结果，Codex 可以通过材料工具查看原件页图。再用新提交键去掉客户指南重跑，核对客户专属要求是否随材料变化。单独验证零附件时，预期得到该业务标签和语向的 Prompt 以及空文档数组。

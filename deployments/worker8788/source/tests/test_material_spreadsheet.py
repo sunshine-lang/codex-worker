@@ -51,7 +51,7 @@ def test_original_xlsx_via_material_service_with_word(tmp_path, word_name, sheet
             while offset is not None:
                 part = session.call("material_read", {"document": index, "offset": offset})
                 offset = json.loads(part[0]["text"])["next_offset"]
-        return example_prompt("规则与所在行的截图一起读取。")
+        return example_prompt("[材料](material:0) 与 [材料](material:1)，规则与所在行的截图一起读取。")
     data = request([word("Style", name=word_name), {"source_filename":sheet_name,
                                     "content_base64":base64.b64encode(raw).decode()}])
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:

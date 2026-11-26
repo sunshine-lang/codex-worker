@@ -20,7 +20,7 @@ PHRASE = "wherein the first member comprises <X>."
 
 @pytest.mark.parametrize("filename", ["测试.PDF", "指南.upload"])
 def test_pdf_text_and_scan_through_material_service(tmp_path, filename):
-    prompt = example_prompt(PHRASE)
+    prompt = example_prompt("[材料](material:0) " + PHRASE)
     previews = []
 
     async def agent(_settings, _folder, session):
@@ -53,8 +53,9 @@ def test_pdf_text_and_scan_through_material_service(tmp_path, filename):
         task = submitted.json()["task_id"]
         wait(client, task, "completed")
         result = client.get(f"{ROUTE}/{task}/result", headers=AUTH).json()
-    assert result["translation_prompt"] == prompt
     [delivery] = result["documents_markdown"]
+    assert "[`" + delivery["markdown_filename"] + "`]" in result["translation_prompt"]
+    assert PHRASE in result["translation_prompt"]
     assert delivery["source_filename"] == doc["source_filename"]
     md = delivery["markdown"]
     assert re.findall(r"^## 第 (\d+) 页$", md, re.M) == ["1", "2", "3"]

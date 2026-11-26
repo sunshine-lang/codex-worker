@@ -31,6 +31,7 @@ def main():
     result = sub.add_parser("result")
     result.add_argument("task_id")
     result.add_argument("--output", type=Path, required=True)
+    result.add_argument("--save-markdown", action="store_true", help="在输出 JSON 的同目录按返回文件名保存 Prompt 和附件 Markdown")
     args = parser.parse_args()
     if not args.flow_url:
         parser.error("请设置 MATERIALS_FLOW_URL 或传 --flow-url。")
@@ -63,7 +64,14 @@ def main():
     if args.operation == "result" and "error" not in value:
         if not isinstance(value.get("translation_prompt"), str) or not isinstance(value.get("documents_markdown"), list):
             raise SystemExit("结果缺少 Prompt 或 Markdown 列表。")
-        args.output.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.save_markdown:
+            if __package__:
+                from .material_client import save_result
+            else:
+                from material_client import save_result
+            save_result(args.output.parent, value, json_name=args.output.name)
+        else:
+            args.output.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         print(args.output)
     else:
         print(json.dumps(value, ensure_ascii=False, indent=2))

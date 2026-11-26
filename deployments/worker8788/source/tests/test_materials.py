@@ -123,7 +123,8 @@ class FixtureRpc:
                 await self.queue.put({"id": i, "method": "item/tool/call",
                     "params": {"threadId": data["threadId"], "turnId": turn, "tool": "material_read",
                                "arguments": {"document": i, "offset": 0}}})
-        prompt = "【角色设定】自由格式正文" if len(self.turns) == 2 else example_prompt("按本次两份材料中的项目要求执行。")
+        refs = [doc["reference"] for doc in json.loads(self.messages[0])["documents"]]
+        prompt = "【角色设定】自由格式正文" if len(self.turns) == 2 else example_prompt("按本单资料执行。\n" + "\n".join(refs))
         await self.queue.put({"method": "turn/completed", "params": {"threadId": data["threadId"],
             "turn": {"id": turn, "status": "completed", "items": [{"type": "agentMessage", "phase": "final_answer",
                 "text": json.dumps({"translation_prompt": prompt})}]}}})
@@ -138,6 +139,8 @@ def test_real_word_conversion_http_and_single_thread(tmp_path):
     require_pandoc()
     replies = []
     async def agent(_settings, _root, session):
+        assert session.prepared_count == 2
+        assert sorted(p.name for p in (_root / "markdown").iterdir()) == ["01-材料.md", "02-材料.md"]
         queue = asyncio.Queue()
         rpc = FixtureRpc(queue, len(session.docs))
         prompt = await conversation(rpc, "same-thread", queue, session)
@@ -156,7 +159,9 @@ def test_real_word_conversion_http_and_single_thread(tmp_path):
         assert final["documents_completed"] == final["documents_total"] == 2
         result = client.get(f"{ROUTE}/{task}/result", headers=AUTH).json()
         assert set(result) == {"translation_prompt", "documents_markdown"}
-        assert result["translation_prompt"] == example_prompt("按本次两份材料中的项目要求执行。")
+        for name in ("01-材料.md", "02-材料.md"):
+            assert "[`" + name + "`]" in result["translation_prompt"]
+        assert [d["markdown_filename"] for d in result["documents_markdown"]] == ["01-材料.md", "02-材料.md"]
         assert [d["source_filename"] for d in result["documents_markdown"]] == ["材料.docx"] * 2
         for i, text in enumerate(("Alpha original", "Beta original")):
             assert text in replies[i] and text in result["documents_markdown"][i]["markdown"]
@@ -217,14 +222,17 @@ def test_slots_zero_files_and_validation(tmp_path):
 
 @pytest.mark.parametrize("filename", ["broken.doc", "broken.docx", "broken.xlsx", "broken.pdf"])
 def test_corrupt_file_is_a_failed_task(tmp_path, filename):
+    started = []
     async def agent(_settings, _root, session):
-        await asyncio.to_thread(session.call, "material_read", {"document": 0, "offset": 0})
-        raise AssertionError("corrupt document unexpectedly parsed")
+        started.append(True)
+        raise AssertionError("model started before conversion succeeded")
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
-        data = request([{"source_filename": filename, "content_base64": "eHg="}])
+        data = request([{"source_filename": "first.txt", "content_base64": "T0s="},
+                        {"source_filename": filename, "content_base64": "eHg="}])
         task = client.post(ROUTE, headers=AUTH, json=data).json()["task_id"]
         failed = wait(client, task, "failed")
         assert failed["current_file"] == filename and failed["error"]["code"] == "INVALID_DOCUMENT"
+        assert failed["documents_completed"] == 1 and not started
         assert client.get(f"{ROUTE}/{task}/result", headers=AUTH).status_code == 409
 
 
