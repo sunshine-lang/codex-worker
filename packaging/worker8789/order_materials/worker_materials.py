@@ -175,7 +175,9 @@ def read_guide(session, args):
     entry = next((v for v in items if v["display_name"] == query), None)
     if entry is None:
         raise ValueError("Unknown guide. Use a filename from overview.material_files.")
-    root = session.root / "input"
+    # A replacement job appends a revision notice to its execution copy of the prompt.
+    # The order manifest describes the original uploaded files.
+    root = session.settings.data_root / "tasks" / session.task["task_id"] / "input"
     path = contained_file(root.resolve(), root / entry["filename"])
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != entry["sha256"]:

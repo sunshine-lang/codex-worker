@@ -324,7 +324,9 @@ def test_zero_references_and_fingerprint():
 
 
 def test_8789_recovery_replace_and_invalid_files(settings, monkeypatch):
+    from codex_remote_worker.project_session import ProjectSession
     from codex_remote_worker.translation_tasks import TaskManager
+    from codex_remote_worker.worker_materials import read_guide
     from test_translation_tasks import JsonRunner
 
     settings = settings.model_copy(
@@ -395,6 +397,12 @@ def test_8789_recovery_replace_and_invalid_files(settings, monkeypatch):
                 ] == rev["task_id"]
                 assert (await waiter())["waiting_on_task_id"] == rev["task_id"]
                 assert (await client.get("/v1/tasks/" + a)).json()["replaced_by_task_id"] == rev["task_id"]
+                revised_task = mgr.store.get(rev["task_id"])
+                job = mgr._enqueue(revised_task, revised_task["batches"][0], session=True)
+                session = ProjectSession(settings, settings.data_root / "jobs" / job["job_id"])
+                prompt = materials("revised")["prompt_file"]
+                guide = read_guide(session, {"query": prompt["filename"], "char_offset": 0, "char_limit": 0})
+                assert guide["content"] == prompt["content"]
 
     asyncio.run(exercise())
 

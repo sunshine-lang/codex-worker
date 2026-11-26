@@ -17,11 +17,8 @@ function Switch-DevPackage([string]$Incoming, [string]$Previous) {
         Disable-ScheduledTask -TaskName $recovery | Out-Null
         $lock = [IO.File]::Open((Join-Path $data '.launch-control.lock'),'OpenOrCreate','ReadWrite','None')
         try {
-            Push-Location $PSScriptRoot
-            try {
-                & $python -B -c "import settings8789 as w; w.assert_idle(); w.stop_owned()"
-                if ($LASTEXITCODE -ne 0) { throw 'No idle 8789 shutdown confirmation; current runtime retained.' }
-            } finally { Pop-Location }
+            & $python -B -c "import sys; sys.path.insert(0, sys.argv[1]); import settings8789 as w; w.assert_idle(); w.stop_owned()" $PSScriptRoot
+            if ($LASTEXITCODE -ne 0) { throw 'No idle 8789 shutdown confirmation; current runtime retained.' }
             if (Get-NetTCPConnection -LocalPort 8789 -State Listen -ErrorAction SilentlyContinue) { throw '8789 still has a listener.' }
             [IO.Directory]::Move($package,$Previous)
             try { [IO.Directory]::Move($Incoming,$package) }
