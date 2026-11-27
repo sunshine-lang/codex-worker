@@ -73,8 +73,8 @@ def settings(root, slots=2):
                            service_token=SecretStr(AUTH["Authorization"][7:]))
 
 
-def request(documents=()):
-    return {"project_name": "同名项目", "business_tag": "IM", "source_language": "en",
+def request(documents=(), *, business_tag="金融"):
+    return {"project_name": "同名项目", "business_tag": business_tag, "source_language": "en",
             "target_language": "zh-CN", "translation_requirements": "设备手册",
             "submission_key": str(uuid.uuid4()), "documents": list(documents)}
 
@@ -252,6 +252,30 @@ def test_restart_recovers_published_and_marks_unfinished(tmp_path):
         assert status(client, tasks[0])["status"] == "completed"
         assert client.get(f"{ROUTE}/{tasks[0]}/result", headers=AUTH).json()["translation_prompt"] == "saved"
         assert status(client, tasks[1])["status"] == "interrupted"
+
+
+def test_replayed_im_job_queued_before_upgrade_keeps_original_delivery(tmp_path):
+    (tmp_path / "staging").mkdir()
+    (tmp_path / "tasks").mkdir()
+    store = Store(tmp_path / "materials.sqlite")
+    data = request([{"source_filename": "guide.txt", "content_base64": "T0s="}], business_tag="IM")
+    job, _ = accept(store, tmp_path, data, 10)
+    del job["material_pipeline"]  # Serialized shape of an IM submit accepted before automatic routing.
+    with store.transaction():
+        store._save(job)
+    store.close()
+
+    async def agent(_settings, _folder, session):
+        assert type(session) is MaterialSession and not session.organize
+        session.call("material_read", {"document": 0, "offset": 0})
+        return session.prompt(json.dumps({"translation_prompt": example_prompt("[材料](material:0)")}))
+
+    with TestClient(create_material_app(settings(tmp_path), agent)) as client:
+        replay = client.post(ROUTE, headers=AUTH, json=data)
+        assert replay.status_code == 200 and replay.json()["task_id"] == job["job_id"]
+        assert "material_pipeline" not in wait(client, job["job_id"], "completed")
+        result = client.get(f"{ROUTE}/{job['job_id']}/result", headers=AUTH).json()
+        assert result["documents_markdown"][0]["markdown"].startswith("```text")
 
 
 def test_explicit_contract_and_fenced_heading_example(tmp_path):

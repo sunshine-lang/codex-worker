@@ -5,7 +5,7 @@ import re
 from hashlib import sha256
 
 from . import material_patent
-from .common import JobError, atomic_write, canonical, file_digest, write_json
+from .common import JobError, atomic_write, file_digest, write_json
 from .material_agent import (
     PROJECT_RULES,
     PROMPT_OUTLINE,
@@ -17,7 +17,7 @@ from .material_agent import (
 )
 from .material_documents import MAX_DELIVERY, page_preview, transcribe
 from .material_organize import INLINE_CODE
-from .material_references import resolve_references
+from .material_reading_copy import ReadingCopyPromptSession, freeze_reading_copies
 
 PATENT_VIEW = tool(
     "material_figure",
@@ -163,28 +163,9 @@ class PatentEvidenceSession(MaterialSession):
         return self.notes
 
     def freeze(self):
-        folder = self.root / "reading-copy"
-        folder.mkdir(exist_ok=True)
-        entries = []
-        total = 0
-        for doc, source, notes in zip(self.docs, self.sources, self.notes, strict=True):
-            body = material_patent.render_document(doc, source, notes).encode("utf-8")
-            total += len(body)
-            if total > MAX_DELIVERY:
-                raise JobError("LIMIT_EXCEEDED", "专利阅读稿合计超过交付限制。")
-            atomic_write(folder / doc["markdown_filename"], body)
-            entries.append(
-                {
-                    "source_filename": doc["source_filename"],
-                    "source_sha256": doc["sha256"],
-                    "markdown_filename": doc["markdown_filename"],
-                    "sha256": sha256(body).hexdigest(),
-                    "bytes": len(body),
-                }
-            )
-        index = {"files": entries, "sha256": sha256(canonical(entries)).hexdigest()}
-        write_json(folder / "snapshot.json", index)
-        return index
+        bodies = (material_patent.render_document(doc, source, notes)
+                  for doc, source, notes in zip(self.docs, self.sources, self.notes, strict=True))
+        return freeze_reading_copies(self.root, self.docs, bodies)
 
 
 class PatentReviewSession(PatentEvidenceSession):
@@ -292,26 +273,8 @@ def downstream_prompt(prompt):
     return result
 
 
-class FrozenPromptSession(MaterialSession):
+class FrozenPromptSession(ReadingCopyPromptSession):
     instructions = FROZEN_INSTRUCTIONS
-    tools = (TOOLS[0],)
-
-    def __init__(self, root, job, touch, snapshot):
-        super().__init__(root, job, touch)
-        self.snapshot = snapshot
-        self.prepared_count = len(self.docs)
-
-    def read_source(self, index):
-        entry = self.snapshot["files"][index]
-        data = (self.root / "reading-copy" / entry["markdown_filename"]).read_bytes()
-        if sha256(data).hexdigest() != entry["sha256"]:
-            raise JobError("INPUT_CHANGED", "生成 Prompt 时阅读稿的指纹与定稿不一致。")
-        return data.decode("utf-8")
-
-    def call(self, name, args):
-        if name != "material_read":
-            raise ValueError("此阶段只能读取本单已定稿的 Markdown。")
-        return super().call(name, args)
 
     def prompt(self, final):
         generated = super().prompt(final)
@@ -328,30 +291,6 @@ class FrozenPromptSession(MaterialSession):
             )
         return result
 
-    def publish(self, prompt):
-        if len(self.finished) != len(self.docs) or not isinstance(prompt, str) or not prompt.strip():
-            raise JobError("INCOMPLETE_DELIVERY", "Prompt 或定稿阅读记录不完整。")
-        prompt = resolve_references(prompt, self.docs)
-        docs = [
-            {
-                "source_filename": d["source_filename"],
-                "markdown_filename": d["markdown_filename"],
-                "markdown": self.read_source(i),
-            }
-            for i, d in enumerate(self.docs)
-        ]
-        if sum(f["bytes"] for f in self.snapshot["files"]) + len(prompt.encode("utf-8")) > MAX_DELIVERY:
-            raise JobError("LIMIT_EXCEEDED", "Prompt 与专利阅读稿合计超过交付限制。")
-        write_json(
-            self.root / "result.json",
-            {
-                "translation_prompt": prompt,
-                "documents_markdown": docs,
-                "processing_mode": material_patent.PIPELINE,
-                "prompt_input": self.snapshot,
-            },
-        )
-
 
 async def run_patent_task(settings, folder, job, touch, agent):
     evidence = PatentEvidenceSession(folder, job, touch)
@@ -367,12 +306,4 @@ async def run_patent_task(settings, folder, job, touch, agent):
             raise JobError("INCOMPLETE_DELIVERY", "专利图示没有逐处完成独立复核。")
     snapshot = await run_material_io(evidence.freeze)
     session = FrozenPromptSession(folder, job, touch, snapshot)
-    touch(
-        reading_copy_sha256=snapshot["sha256"],
-        stage="generating_prompt",
-        recent_action="已定稿，正在仅依据这版阅读稿生成 Prompt",
-        current_file=None,
-    )
-    prompt = await agent(settings, folder, session)
-    session.update("validating_result", "正在逐份核对 Prompt 输入与交付文件")
-    await run_material_io(session.publish, prompt)
+    await session.generate_and_publish(settings, agent, processing_mode=material_patent.PIPELINE, prompt_input=snapshot)

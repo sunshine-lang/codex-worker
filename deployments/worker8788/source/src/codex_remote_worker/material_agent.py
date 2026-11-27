@@ -132,10 +132,10 @@ async def run_material_io(operation, *args):
 
 class MaterialSession:
     thread_field = "codex_thread_id"
-    def __init__(self, root, job, touch):
+    def __init__(self, root, job, touch, *, organize=False):
         self.root = Path(root)
         self.request = job["request"]
-        self.organize = self.request.get("processing_mode") == "organize"
+        self.organize = organize or self.request.get("processing_mode") == "organize"
         self.docs = material_manifest(job["documents"])
         self.touch = touch
         self.prepared_count = 0

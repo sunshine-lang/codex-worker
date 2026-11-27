@@ -1,6 +1,6 @@
 # 项目材料预处理 Worker
 
-这个服务将一次材料提交分配给一个执行位和一个 Codex 会话。输入可以没有附件，也可以包含一份或多份项目原件，包括 Word、XLSX、CSV、PDF、TXT。返回一份项目翻译 Prompt 和逐文件原文 Markdown。任务状态保存在材料服务自己的 SQLite 中。
+一次材料提交占用一个执行位。下游统一使用 `submit`，由 Worker 按业务标签分流。IM 自动整理材料后依据同版整理稿生成 Prompt，专利按定稿流程处理，其他标签沿用通用流程。输入可以没有附件，也可以包含 Word、XLSX、CSV、PDF、TXT。结果包含一份项目翻译 Prompt 和逐文件 Markdown。任务状态保存在材料服务自己的 SQLite 中。
 
 ## 在现有 Windows Worker 服务器部署
 
@@ -89,4 +89,4 @@ python integrations/materials/call.py status <返回的任务号>
 python integrations/materials/call.py result <返回的任务号> --output result.json --save-markdown
 ~~~
 
-检查两份 Markdown 是否对应原文件、术语表的行列和例外是否保留。图片放在原位置并内嵌到结果，Codex 可以通过材料工具查看原件页图。再用新提交键去掉客户指南重跑，核对客户专属要求是否随材料变化。单独验证零附件时，预期得到该业务标签和语向的 Prompt 以及空文档数组。
+检查两份 Markdown 是否对应原文件、术语表的行列和例外是否保留。对 IM 示例，核对原图位置的图号和文字说明，再查看 Prompt 是否正确引用了相应的客户修订。再用新提交键去掉客户指南重跑，核对客户专属要求是否随材料变化。单独验证零附件时，预期得到该业务标签和语向的 Prompt 以及空文档数组。

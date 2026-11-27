@@ -58,6 +58,18 @@ def test_bad_or_missing_citation_is_rejected(catalog, extra):
         resolve_references(example_prompt(catalog) + "\n\n" + extra, docs)
 
 
+def test_correction_identifies_all_redundant_names_even_when_the_links_are_valid():
+    docs = material_manifest([{"source_filename": "面板反馈.docx"}, {"source_filename": "操作范围.txt"}])
+    catalog = "[材料](material:0) 原图 1：按钮修订。\n\n[材料](material:1) 正文：适用对象。"
+    with pytest.raises(ValueError) as rejected:
+        resolve_references(example_prompt(catalog + "\n\n《01-面板反馈.md》（原件《面板反馈.docx》）和 `02-操作范围.md`。"), docs)
+    message = str(rejected.value)
+    assert "面板反馈.docx、01-面板反馈.md → [材料](material:0)" in message
+    assert "02-操作范围.md → [材料](material:1)" in message
+    result = resolve_references(example_prompt(catalog), docs)
+    assert resolve_references(result, docs) == result
+
+
 def test_unresolved_citations_cannot_publish_a_partial_result(tmp_path):
     async def agent(_settings, _folder, session):
         session.call("material_read", {"document":0,"offset":0})

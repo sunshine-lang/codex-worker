@@ -90,11 +90,23 @@ def resolve_references(prompt, docs):
     visible = re.sub(r"《([^《》\n]+)》\s*[（(]((?:本次)?未(?:随单)?提供|下游交付物)[）)]",
                      other_title, root.text_content())
     visible = " ".join(unicodedata.normalize("NFC", visible).casefold().split())
+    repairs = []
+    stray_reference = re.search(r"[\w)\]-]\.md(?![a-z0-9_])|\]\(material:", visible)
     for doc in docs:
         source = " ".join(unicodedata.normalize("NFC", doc["source_filename"]).casefold().split())
+        delivery = " ".join(unicodedata.normalize("NFC", doc["markdown_filename"]).casefold().split())
+        labels = []
         if (Path(source).suffix and source in visible) or f"《{source}》" in visible:
-            raise ValueError(f"正文仍以原件名 {doc['source_filename']} 引用材料。请改用对应 reference；逐字引文放入引用块或代码块。")
-    if re.search(r"[\w)\]-]\.md(?![a-z0-9_])|\]\(material:", visible):
+            labels.append(doc["source_filename"])
+        if stray_reference and delivery in visible:
+            labels.append(doc["markdown_filename"])
+        if labels:
+            repairs.append("、".join(labels) + " → " + doc["reference"])
+    if repairs:
+        raise ValueError("请在整篇 Prompt 一次修正以下裸写的文件名：" + "；".join(repairs)
+                         + "。已有对应链接时直接删去重复的文件名及原件名说明，保留链接、位置和业务规则。"
+                         "客户逐字引文放入引用块或代码块。重新提交完整 Prompt。")
+    if stray_reference:
         raise ValueError("材料文件名必须用清单 reference 引用。未提供的资料用《原名》（未提供），指定交付物用《原名》（下游交付物）。")
     for line, start, end, replacement in sorted(edits, reverse=True):
         lines[line] = lines[line][:start] + replacement + lines[line][end:]

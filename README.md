@@ -2,7 +2,7 @@
 
 把项目指南、工作簿、CSV、PDF、TXT 等原件和项目要求一并提交，即可取回一份供下游翻译模型使用的提示词，以及每份指南的原文 Markdown。这个分支 `codex/materials-preprocess-worker` 提供独立的材料服务，Windows 部署端口为 **8787**。调用方可以直接请求 Worker，也可以使用仓库自带的 Langflow 流程。
 
-例如，提交一份英文设备面板的操作规范，要求面向现场操作员翻译。Worker 会将文档中的指定译法、错误码保留规则、适用条件和例外整理到 `translation_prompt`，同时在 `documents_markdown` 中交付原文和术语表。Worker 先将本单全部附件转写并保存为可交付的 Markdown，再启动一个 Codex 会话提炼项目规则。文件名由 Worker 按提交顺序分配。遇到表格或图示歧义时，模型可以查看原件页图。零附件也可提交，提示词将依据业务标签、语向和文字要求生成。
+下游统一用 `submit` 提交，Worker 按 `business_tag` 选择处理流程。IM 自动整理原件，再依据整理稿生成 Prompt；专利使用独立复核后的定稿；金融、生科等标签沿用通用材料流程。一次提交取得一个任务号，完成后在同一个结果中取回 `translation_prompt` 和按附件顺序排列的 `documents_markdown`。零附件也可提交，提示词将依据业务标签、语向和文字要求生成。
 
 ## 快速试用
 
@@ -67,7 +67,7 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 
 历史已完成任务保留原结果与旧 Prompt。新版 Python 示例在历史结果缺少 `markdown_filename` 时沿用旧编号命名。若调用方严格校验字段，请允许新的附件字段；输入及最外层的两个结果字段沿用原约定。
 
-以下是缩短的结果示例。`translation_prompt` 是可直接保存为 Markdown 的字符串，按原 Prompt 的六个业务一级标题组织。本次输入若明确给出下游翻译契约，可在最前面增加「上游契约与模型任务字段」。零附件时仍保留外部指南一节，说明本次依据的业务标签、语向和文字要求。`documents_markdown` 按附件顺序交付原文和内嵌图片，零附件时返回 `[]`。
+以下是缩短的结果示例。`translation_prompt` 是可直接保存为 Markdown 的字符串，按原 Prompt 的六个业务一级标题组织。本次输入若明确给出下游翻译契约，可在最前面增加「上游契约与模型任务字段」。零附件时仍保留外部指南一节，说明本次依据的业务标签、语向和文字要求。`documents_markdown` 按附件顺序交付；IM 返回带原图说明的整理稿，零附件时返回 `[]`。
 
 ```json
 {
@@ -135,11 +135,11 @@ Worker 先转写原件。Word 的删除／插入、截图的修改前后、PDF �
 
 校验会拦截把“无需生成句段译文”带进下游任务目标的草稿。发布器仅清理目标或交付章节中可独立识别的准备阶段状态句，引用、代码和客户示例保留。发生清理时，任务目录留有清理前的文本供对照。
 
-### 仅整理 IM 资料
+### IM 材料自动整理并生成 Prompt
 
-校对人员可以先取得每份原件的可编辑 Markdown。部署该版本后，`GET /v1/ready` 的 `organize_business_tags` 包含 `IM`。在 Langflow 使用 `operation="organize"`，项目字段和 `documents` 的传法与 `submit` 相同，业务标签填 `IM`。直连 Worker 的提交入口是 `POST /v1/material-tasks/organize`。查询与取回沿用同一个任务号及原有的 `status`、`result` 操作。
+提交 `operation="submit"`、`business_tag="IM"` 即可，直连入口为 `POST /v1/material-tasks`。Worker 将段落和表格整理成可编辑的 Markdown，在原图位置放入核对后的图号和文字说明，辨认有歧义的内容标为“待确认”。整理完成后自动生成 Prompt；生成会话逐份阅读这版整理稿，发布前逐文件核对 SHA-256。查询和取件沿用同一任务号的 `status` 与 `result`。
 
-结果为 `{"processing_mode":"organize","documents_markdown":[...]}`。每份附件仍有 `source_filename`、`markdown_filename` 和 `markdown`。整理器将原文按标题、段落和表格排版，用逐图核对的文字替换内嵌图片，在对应位置注明原图序号。辨认有歧义的内容标为“待确认”，可对照原件审核。文字版用于业务确认，生成项目 Prompt 的调用继续使用 `submit`。
+结果包含 `translation_prompt` 和 `documents_markdown`，按每项的 `markdown_filename` 保存即可打开 Prompt 中的链接。维护方可用 `GET /v1/ready` 的 `im_reading_prompt: "im-reading-prompt/1"` 确认此流程已部署。旧版仅整理调用 `organize` 继续返回原约定的整理稿。
 
 导入仓库的三节点画布。输入节点接收业务 JSON，材料节点调用 Worker，`ChatOutput-Materials` 输出任务响应。仓库附带的调用脚本可读取本地项目附件、编码上传，并从 Langflow 外层响应中提取业务 JSON。[画布文件](integrations/materials/flow.json) · [节点源码](integrations/materials/component.py) · [调用脚本](integrations/materials/call.py)
 

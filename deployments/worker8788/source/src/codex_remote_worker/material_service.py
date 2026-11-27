@@ -20,6 +20,7 @@ from .material_patent_session import run_patent_task
 from .material_documents import DOCUMENT_TYPES, MAX_DELIVERY
 from .material_organize import organize_documents
 from .material_patent import PIPELINE as PATENT_PIPELINE
+from .material_reading_copy import ReadingCopyPromptSession, freeze_reading_copies
 from .material_references import resolve_references
 from .store import InstanceLock, Store
 
@@ -28,6 +29,7 @@ MAX_INPUT = 256 * 1024 * 1024  # Combined original attachment sizes per submissi
 MAX_BODY = (MAX_INPUT * 4 // 3) + 1024 * 1024  # Allow for Base64 expansion and JSON metadata.
 TASK_ID = re.compile(r"mat_[0-9a-f]{32}\Z")
 FIELDS = ("project_name", "business_tag", "source_language", "target_language")
+IM_PIPELINE = "im-reading-prompt/1"
 
 
 def public(job):
@@ -91,31 +93,67 @@ def accept(store, root, obj, capacity, organize=False):
                   "request": request, "project_name": request["project_name"], "documents": manifest,
                   "status": "queued", "stage": "queued", "documents_completed": 0, "documents_total": len(docs),
                   "created_at": timestamp, "updated_at": timestamp, "recent_action": "已收妥本次项目材料"}
-        if not organize and request["business_tag"] == "专利":
-            # Keep legacy submit fingerprints valid. Existing jobs keep their original execution path.
-            record["material_pipeline"] = PATENT_PIPELINE
+        # Route new submissions outside the fingerprint. Replays retain the original job and pipeline.
+        if not organize:
+            if request["business_tag"].casefold() == "im":
+                record["material_pipeline"] = IM_PIPELINE
+            elif request["business_tag"] == "专利":
+                record["material_pipeline"] = PATENT_PIPELINE
         return store.accept(record, stage, root / "tasks" / task, capacity)
 
 
-def publish_result(folder, session, agent_result):
+def transcribed_documents(session):
     docs = []
     for doc in session.docs:
         name = doc["markdown_filename"]
-        markdown = (folder / "markdown" / name).read_bytes().decode("utf-8")
+        markdown = (session.root / "markdown" / name).read_bytes().decode("utf-8")
         docs.append({"source_filename": doc["source_filename"], "markdown_filename": name, "markdown": markdown})
+    return docs
+
+
+def organize_im_files(session, notes):
     try:
-        if session.organize:
-            result = organize_documents(docs, agent_result)
-            size = sum(len(d["markdown"].encode("utf-8")) for d in result["documents_markdown"])
-        else:
-            prompt = resolve_references(agent_result, session.docs)
-            result = {"translation_prompt": prompt, "documents_markdown": docs}
-            size = session.markdown_bytes + len(prompt.encode("utf-8"))
+        result = organize_documents(transcribed_documents(session), notes)
     except ValueError as exc:
         raise JobError("INCOMPLETE_DELIVERY", str(exc)) from exc
-    if size > MAX_DELIVERY:
+    if sum(len(doc["markdown"].encode("utf-8")) for doc in result["documents_markdown"]) > MAX_DELIVERY:
         raise JobError("LIMIT_EXCEEDED", "本次资料交付合计超过 96 MiB。")
-    write_json(folder / "result.json", result)
+    return result
+
+
+async def run_im_task(settings, folder, job, touch, agent):
+    with_prompt = job.get("material_pipeline") == IM_PIPELINE
+    session = MaterialSession(folder, job, touch, organize=True)
+    if with_prompt:
+        session.thread_field = "material_organization_thread_id"
+    await session.prepare()
+    if any(session.figure_counts):
+        notes = await agent(settings, folder, session)
+        if not session.reading_complete:
+            raise JobError("INCOMPLETE_DELIVERY", "本单原文或原图核对尚未完成。")
+    else:
+        notes = {"im_figures": [[] for _ in session.docs]}
+    session.update("organizing_documents", "正在整理 IM 材料")
+    result = await run_material_io(organize_im_files, session, notes)
+    if not with_prompt:
+        session.update("validating_result", "正在发布 IM 整理稿")
+        await run_material_io(write_json, folder / "result.json", result)
+        return
+    snapshot = await run_material_io(freeze_reading_copies, folder, session.docs,
+                                     (doc["markdown"] for doc in result["documents_markdown"]))
+    del result
+    prompt_session = ReadingCopyPromptSession(folder, job, touch, snapshot)
+    await prompt_session.generate_and_publish(settings, agent)
+
+
+def publish_result(folder, session, agent_result):
+    try:
+        prompt = resolve_references(agent_result, session.docs)
+    except ValueError as exc:
+        raise JobError("INCOMPLETE_DELIVERY", str(exc)) from exc
+    if session.markdown_bytes + len(prompt.encode("utf-8")) > MAX_DELIVERY:
+        raise JobError("LIMIT_EXCEEDED", "本次资料交付合计超过 96 MiB。")
+    write_json(folder / "result.json", {"translation_prompt": prompt, "documents_markdown": transcribed_documents(session)})
 
 
 def create_material_app(settings, agent=run_agent):
@@ -135,25 +173,19 @@ def create_material_app(settings, agent=run_agent):
                 store.update(task, expected={"running"}, **values)
             try:
                 touch(execution_slot=slot, recent_action="已取得执行通道")
-                if job.get("material_pipeline") == PATENT_PIPELINE:
-                    async with asyncio.timeout(7200):
-                        await run_patent_task(settings, folder, job, touch, agent)
-                    touch(status="completed", stage="completed", recent_action="专利阅读稿与同版 Prompt 已保存", current_file=None)
-                    continue
-                session = MaterialSession(folder, job, touch)
                 async with asyncio.timeout(7200):
-                    await session.prepare()
-                    if session.organize and not any(session.figure_counts):
-                        # Text-only guides keep all transcribed paragraphs and tables verbatim in substance.
-                        result = {"im_figures": [[] for _ in session.docs]}
+                    if job.get("material_pipeline") == PATENT_PIPELINE:
+                        await run_patent_task(settings, folder, job, touch, agent)
+                    elif job.get("material_pipeline") == IM_PIPELINE or job["request"].get("processing_mode") == "organize":
+                        await run_im_task(settings, folder, job, touch, agent)
                     else:
+                        session = MaterialSession(folder, job, touch)
+                        await session.prepare()
                         result = await agent(settings, folder, session)
-                        if not session.reading_complete:
-                            raise JobError("INCOMPLETE_DELIVERY", "本单原文或原图核对尚未完成。")
-                if not session.organize and (not isinstance(result, str) or not result.strip()):
-                    raise JobError("INCOMPLETE_DELIVERY", "Prompt 或逐份原文核对尚未完成。")
-                session.update("validating_result", "正在核对并发布本次产物")
-                await run_material_io(publish_result, folder, session, result)
+                        if not session.reading_complete or not isinstance(result, str) or not result.strip():
+                            raise JobError("INCOMPLETE_DELIVERY", "Prompt 或逐份原文核对尚未完成。")
+                        session.update("validating_result", "正在核对并发布本次产物")
+                        await run_material_io(publish_result, folder, session, result)
                 touch(status="completed", stage="completed", recent_action="交付文件已保存", current_file=None)
             except asyncio.CancelledError:
                 # Startup reconciles an atomically published result or marks this task interrupted.
@@ -162,6 +194,10 @@ def create_material_app(settings, agent=run_agent):
                 if isinstance(exc, JobError):
                     error = exc.public()
                 elif isinstance(exc, TimeoutError):
+                    # A shielded publisher can finish its atomic replace while the deadline expires.
+                    if (folder / "result.json").is_file():
+                        touch(status="completed", stage="completed", recent_action="交付文件已保存", current_file=None)
+                        continue
                     error = {"code": "TIMEOUT", "message": "材料任务超过执行时限。"}
                 else:
                     LOG.exception("Material task %s failed", task)
@@ -218,7 +254,8 @@ def create_material_app(settings, agent=run_agent):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
                   "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES,
                   "format_detection": "content", "markdown_filenames": True, "organize_business_tags": ["IM"],
-                  "patent_reading_prompt": PATENT_PIPELINE, "max_attachment_bytes_per_task": MAX_INPUT}
+                  "im_reading_prompt": IM_PIPELINE, "patent_reading_prompt": PATENT_PIPELINE,
+                  "max_attachment_bytes_per_task": MAX_INPUT}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():
