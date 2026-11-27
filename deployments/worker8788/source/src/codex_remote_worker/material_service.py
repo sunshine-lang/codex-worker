@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from .common import JobError, canonical, digest, now, safe_name, write_json
 from .material_agent import MaterialSession, run_agent, run_material_io
 from .material_documents import DOCUMENT_TYPES, MAX_DELIVERY
+from .material_organize import organize_documents
 from .material_references import resolve_references
 from .store import InstanceLock, Store
 
@@ -34,7 +35,7 @@ def public(job):
             **{field: job[field] for field in fields if field in job}}
 
 
-def accept(store, root, obj, capacity):
+def accept(store, root, obj, capacity, organize=False):
     if not isinstance(obj, dict):
         raise JobError("INVALID_INPUT", "请求需要是 JSON 对象。")
     request = {}
@@ -44,6 +45,10 @@ def accept(store, root, obj, capacity):
             raise JobError("INVALID_INPUT", f"{field} 需要非空文本。")
         request[field] = value.strip()
     request["translation_requirements"] = obj.get("translation_requirements", "")
+    if organize:
+        if request["business_tag"].casefold() != "im":
+            raise JobError("INVALID_INPUT", "独立资料整理当前支持 IM。")
+        request["processing_mode"] = "organize"
     if not isinstance(request["translation_requirements"], str):
         raise JobError("INVALID_INPUT", "translation_requirements 需要文本。")
     try:
@@ -86,19 +91,25 @@ def accept(store, root, obj, capacity):
         return store.accept(record, stage, root / "tasks" / task, capacity)
 
 
-def publish_result(folder, session, prompt):
-    try:
-        prompt = resolve_references(prompt, session.docs)
-    except ValueError as exc:
-        raise JobError("INCOMPLETE_DELIVERY", str(exc)) from exc
-    if session.markdown_bytes + len(prompt.encode("utf-8")) > MAX_DELIVERY:
-        raise JobError("LIMIT_EXCEEDED", "项目 Prompt 与 Markdown 合计超过 96 MiB。")
+def publish_result(folder, session, agent_result):
     docs = []
     for doc in session.docs:
         name = doc["markdown_filename"]
         markdown = (folder / "markdown" / name).read_bytes().decode("utf-8")
         docs.append({"source_filename": doc["source_filename"], "markdown_filename": name, "markdown": markdown})
-    write_json(folder / "result.json", {"translation_prompt": prompt, "documents_markdown": docs})
+    try:
+        if session.organize:
+            result = organize_documents(docs, agent_result)
+            size = sum(len(d["markdown"].encode("utf-8")) for d in result["documents_markdown"])
+        else:
+            prompt = resolve_references(agent_result, session.docs)
+            result = {"translation_prompt": prompt, "documents_markdown": docs}
+            size = session.markdown_bytes + len(prompt.encode("utf-8"))
+    except ValueError as exc:
+        raise JobError("INCOMPLETE_DELIVERY", str(exc)) from exc
+    if size > MAX_DELIVERY:
+        raise JobError("LIMIT_EXCEEDED", "本次资料交付合计超过 96 MiB。")
+    write_json(folder / "result.json", result)
 
 
 def create_material_app(settings, agent=run_agent):
@@ -121,11 +132,17 @@ def create_material_app(settings, agent=run_agent):
                 touch(execution_slot=slot, recent_action="已取得执行通道")
                 async with asyncio.timeout(7200):
                     await session.prepare()
-                    prompt = await agent(settings, folder, session)
-                if not isinstance(prompt, str) or not prompt.strip() or not session.reading_complete:
+                    if session.organize and not any(session.figure_counts):
+                        # Text-only guides keep all transcribed paragraphs and tables verbatim in substance.
+                        result = {"im_figures": [[] for _ in session.docs]}
+                    else:
+                        result = await agent(settings, folder, session)
+                        if not session.reading_complete:
+                            raise JobError("INCOMPLETE_DELIVERY", "本单原文或原图核对尚未完成。")
+                if not session.organize and (not isinstance(result, str) or not result.strip()):
                     raise JobError("INCOMPLETE_DELIVERY", "Prompt 或逐份原文核对尚未完成。")
                 session.update("validating_result", "正在核对并发布本次产物")
-                await run_material_io(publish_result, folder, session, prompt)
+                await run_material_io(publish_result, folder, session, result)
                 touch(status="completed", stage="completed", recent_action="交付文件已保存", current_file=None)
             except asyncio.CancelledError:
                 # Startup reconciles an atomically published result or marks this task interrupted.
@@ -189,7 +206,7 @@ def create_material_app(settings, agent=run_agent):
     async def ready(include_channels: bool = False):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
                   "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES,
-                  "format_detection": "content", "markdown_filenames": True}
+                  "format_detection": "content", "markdown_filenames": True, "organize_business_tags": ["IM"]}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():
@@ -202,8 +219,7 @@ def create_material_app(settings, agent=run_agent):
             result["channels"] = channels
         return result
 
-    @app.post("/v1/material-tasks")
-    async def submit(request: Request):
+    async def receive(request, organize):
         raw = bytearray()
         async for block in request.stream():
             if len(raw) + len(block) > MAX_BODY:
@@ -213,9 +229,17 @@ def create_material_app(settings, agent=run_agent):
             obj = json.loads(raw)
         except (ValueError, UnicodeError) as exc:
             raise JobError("INVALID_INPUT", "请求需要 UTF-8 JSON。") from exc
-        job, replay = await asyncio.to_thread(accept, app.state.store, root, obj, settings.queue_capacity)
+        job, replay = await asyncio.to_thread(accept, app.state.store, root, obj, settings.queue_capacity, organize)
         app.state.wake.set()
         return JSONResponse(public(job), status_code=200 if replay else 202)
+
+    @app.post("/v1/material-tasks")
+    async def submit(request: Request):
+        return await receive(request, False)
+
+    @app.post("/v1/material-tasks/organize")
+    async def organize(request: Request):
+        return await receive(request, True)
 
     def lookup(task_id):
         if not TASK_ID.fullmatch(task_id):

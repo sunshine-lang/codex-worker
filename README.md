@@ -125,6 +125,12 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 
 ## 通过 Langflow 调用
 
+### 仅整理 IM 资料
+
+校对人员可以先取得每份原件的可编辑 Markdown。部署该版本后，`GET /v1/ready` 的 `organize_business_tags` 包含 `IM`。在 Langflow 使用 `operation="organize"`，项目字段和 `documents` 的传法与 `submit` 相同，业务标签填 `IM`。直连 Worker 的提交入口是 `POST /v1/material-tasks/organize`。查询与取回沿用同一个任务号及原有的 `status`、`result` 操作。
+
+结果为 `{"processing_mode":"organize","documents_markdown":[...]}`。每份附件仍有 `source_filename`、`markdown_filename` 和 `markdown`。整理器将原文按标题、段落和表格排版，用逐图核对的文字替换内嵌图片，在对应位置注明原图序号。辨认有歧义的内容标为“待确认”，可对照原件审核。文字版用于业务确认，生成项目 Prompt 的调用继续使用 `submit`。
+
 导入仓库的三节点画布。输入节点接收业务 JSON，材料节点调用 Worker，`ChatOutput-Materials` 输出任务响应。仓库附带的调用脚本可读取本地项目附件、编码上传，并从 Langflow 外层响应中提取业务 JSON。[画布文件](integrations/materials/flow.json) · [节点源码](integrations/materials/component.py) · [调用脚本](integrations/materials/call.py)
 
 | 配置位置 | 配置项 |

@@ -86,14 +86,15 @@ def make_documents(paths):
 
 
 def save_result(out, result, names=None, json_name="result.json"):
-    prompt, docs = result["translation_prompt"], result["documents_markdown"]
-    if not isinstance(prompt, str) or not prompt.strip() or not isinstance(docs, list):
+    organized = result.get("processing_mode") == "organize"
+    prompt, docs = result.get("translation_prompt"), result.get("documents_markdown")
+    if not isinstance(docs, list) or (not organized and (not isinstance(prompt, str) or not prompt.strip())):
         raise ValueError("结果缺少项目 Prompt 或附件 Markdown 列表。")
     if not json_name or re.search(r'[<>:"/\\|?*\x00-\x1f\x7f]', json_name) or json_name in (".",".."):
         raise ValueError("JSON 输出名须为当前目录下的单个文件名。")
     if not all(isinstance(doc, dict) for doc in docs):
         raise ValueError("材料列表中有无效条目。")
-    outputs = {"翻译Prompt.md": prompt}
+    outputs = {} if organized else {"翻译Prompt.md": prompt}
     used = {unicodedata.normalize("NFC", n).casefold() for n in (json_name, "翻译Prompt.md")}
     if len(used) != 2:
         raise ValueError("JSON 输出名与项目 Prompt 冲突。")
@@ -125,7 +126,8 @@ def save_result(out, result, names=None, json_name="result.json"):
             (stage / filename).write_bytes(text.encode("utf-8"))
         for filename in outputs:
             (stage / filename).replace(out / filename)
-    print(f"已保存 1 份项目 Prompt 和 {len(docs)} 份材料 Markdown，目录为 {out.resolve()}")
+    print(f"已保存 {len(docs)} 份材料 Markdown" + ("" if organized else " 和 1 份项目 Prompt")
+          + f"，目录为 {out.resolve()}")
 
 
 def main():
@@ -136,6 +138,7 @@ def main():
     args.add_argument("--requirements", default="")
     args.add_argument("--file", action="append", type=Path, default=[])
     args.add_argument("--resume", action="store_true")
+    args.add_argument("--organize", action="store_true", help="仅整理 IM 项目材料，交付可编辑的 Markdown")
     opt = args.parse_args()
     if not opt.resume and not all((opt.project, opt.tag, opt.source, opt.target)):
         args.error("首次提交需提供 --project、--tag、--source 和 --target。")
@@ -158,7 +161,7 @@ def main():
         except FileExistsError:
             pass
         idem = str(uuid.UUID(key_file.read_text(encoding="utf-8").strip()))
-        receipt = call(key, "submit", project_name=opt.project, business_tag=opt.tag,
+        receipt = call(key, "organize" if opt.organize else "submit", project_name=opt.project, business_tag=opt.tag,
                        source_language=opt.source, target_language=opt.target,
                        translation_requirements=opt.requirements, documents=docs, submission_key=idem)
         task = receipt.get("task_id", "")

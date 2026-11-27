@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--flow-url", default=os.environ.get("MATERIALS_FLOW_URL"),
                         help="完整的 Langflow /api/v1/run/<flow_id> 地址")
     sub = parser.add_subparsers(dest="operation", required=True)
-    submit = sub.add_parser("submit")
+    submit = sub.add_parser("submit", aliases=["organize"])
     for field in ("project-name", "business-tag", "source-language", "target-language"):
         submit.add_argument("--" + field, required=True)
     submit.add_argument("--requirements", default="")
@@ -37,7 +37,7 @@ def main():
         parser.error("请设置 MATERIALS_FLOW_URL 或传 --flow-url。")
     key = os.environ.get("LANGFLOW_API_KEY") or getpass.getpass("Langflow API Key（隐藏）：")
     payload = {"operation": args.operation}
-    if args.operation == "submit":
+    if args.operation in ("submit", "organize"):
         submission = str(args.submission_key or uuid.uuid4())
         print("submission_key=" + submission, file=sys.stderr, flush=True)
         payload.update(project_name=args.project_name, business_tag=args.business_tag,
@@ -62,7 +62,8 @@ def main():
         raise SystemExit("Langflow 未返回材料节点结果。")
     value = values[0]
     if args.operation == "result" and "error" not in value:
-        if not isinstance(value.get("translation_prompt"), str) or not isinstance(value.get("documents_markdown"), list):
+        if (not isinstance(value.get("documents_markdown"), list) or
+                (value.get("processing_mode") != "organize" and not isinstance(value.get("translation_prompt"), str))):
             raise SystemExit("结果缺少 Prompt 或 Markdown 列表。")
         if args.save_markdown:
             if __package__:

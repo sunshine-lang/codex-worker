@@ -15,6 +15,15 @@ def result(*docs):
     return {"translation_prompt": "项目说明", "documents_markdown": list(docs)}
 
 
+def test_save_organized_materials_without_project_prompt(tmp_path):
+    doc = {"source_filename": "客户.docx", "markdown_filename": "01-客户.md", "markdown": "# 客户指南\n\n## 规则\n"}
+    data = {"processing_mode": "organize", "documents_markdown": [doc]}
+    save(tmp_path, data, ["客户.docx"])
+    assert (tmp_path / "01-客户.md").read_text() == doc["markdown"]
+    assert json.loads((tmp_path / "result.json").read_bytes()) == data
+    assert not (tmp_path / "翻译Prompt.md").exists()
+
+
 def test_download_uses_server_names_and_can_read_historical_results(tmp_path):
     old = {"source_filename": "同名.pdf", "markdown": "原文"}
     new = {**old, "markdown_filename": "实际  交付.md"}

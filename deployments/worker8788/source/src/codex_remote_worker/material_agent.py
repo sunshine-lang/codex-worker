@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .common import JobError, Redactor, file_digest
 from .material_documents import MAX_DELIVERY, page_preview, standalone_markdown, transcribe
+from .material_organize import FIGURE_INSTRUCTIONS, checked_notes, figure_urls
 from .material_references import GUIDES, material_manifest, resolve_references
 
 CONTRACT_HEADING = "# 上游契约与模型任务字段"
@@ -114,6 +115,7 @@ def tool(name, description, argument):
 
 TOOLS = [tool("material_read", "按编号和字符偏移读取材料的原文 Markdown。首个偏移为 0。", "offset"),
          tool("material_page", "查看 PDF 原页、Word 页图或 Excel 逐行转写的页图。页码从 1 开始。", "page")]
+FIGURE_TOOL = tool("material_figure", "查看该附件按正文顺序排列的单幅原图，图号从 1 开始。", "number")
 
 
 async def run_material_io(operation, *args):
@@ -130,6 +132,7 @@ class MaterialSession:
     def __init__(self, root, job, touch):
         self.root = Path(root)
         self.request = job["request"]
+        self.organize = self.request.get("processing_mode") == "organize"
         self.docs = material_manifest(job["documents"])
         self.touch = touch
         self.prepared_count = 0
@@ -137,10 +140,20 @@ class MaterialSession:
         self.read_to = [0] * len(self.docs)
         self.finished = set()
         self.pending_pdf_pages = set()
+        self.figure_counts = []
+        self.seen_figures = set()
 
     @property
     def reading_complete(self):
-        return len(self.finished) == len(self.docs) and not self.pending_pdf_pages
+        return (len(self.finished) == len(self.docs) and not self.pending_pdf_pages
+                and len(self.seen_figures) == sum(self.figure_counts))
+
+    def finish_reading(self):
+        if self.reading_complete:
+            if self.organize:
+                self.update("organizing_documents", "原文与原图已读完，正在整理资料")
+            else:
+                self.update("generating_prompt", "材料已读完，正在综合项目翻译要求")
 
     def update(self, stage, action, filename=None):
         self.touch(stage=stage, recent_action=action, current_file=filename,
@@ -155,6 +168,8 @@ class MaterialSession:
         transcribe(source, folder)
         # Keep the lightweight reading view and the standalone deliverable separate (inline images can be large).
         data = standalone_markdown(folder, MAX_DELIVERY - self.markdown_bytes).encode("utf-8")
+        if self.organize:
+            self.figure_counts.append(sum(1 for _ in figure_urls(data.decode("utf-8"))))
         output = self.root / "markdown" / entry["markdown_filename"]
         output.parent.mkdir(exist_ok=True)
         staged = folder / "delivery.tmp"
@@ -182,12 +197,24 @@ class MaterialSession:
         filename = entry["markdown_filename"]
         source = self.root / "input" / entry["stored_name"]
         folder = self.root / "documents" / str(index)
+        if name == "material_figure" and self.organize:
+            number = args.get("number")
+            if type(number) is not int or not 1 <= number <= self.figure_counts[index]:
+                raise ValueError("请使用本附件清单中的图号。")
+            self.update("checking_page", f"正在查看 {filename} 的原图 {number}", filename)
+            markdown = (self.root / "markdown" / filename).read_text(encoding="utf-8")
+            url = next(url for n, url in enumerate(figure_urls(markdown), 1) if n == number)
+            self.seen_figures.add((index, number))
+            if (folder / "pdf-pages.json").is_file():
+                self.pending_pdf_pages.discard((index, number))
+            self.finish_reading()
+            return [{"type": "inputText", "text": f"{filename} 原图 {number}"},
+                    {"type": "inputImage", "imageUrl": url}]
         if name == "material_page":
             self.update("checking_page", "正在查看原件页图", filename)
             url, count = page_preview(source, folder, args.get("page"))
             self.pending_pdf_pages.discard((index, args["page"]))
-            if self.reading_complete:
-                self.update("generating_prompt", "材料已读完，正在综合项目翻译要求")
+            self.finish_reading()
             return [{"type": "inputText", "text": f"{filename} 第 {args['page']} 页，共 {count} 页"},
                     {"type": "inputImage", "imageUrl": url}]
         if name != "material_read":
@@ -201,8 +228,7 @@ class MaterialSession:
         if end == len(text):
             self.finished.add(index)
         self.update("reading_documents", f"已读取至 {end}/{len(text)} 字符", filename)
-        if self.reading_complete:
-            self.update("generating_prompt", "材料已读完，正在综合项目翻译要求")
+        self.finish_reading()
         value = {"document": index, "markdown_filename": filename, "reference": entry["reference"], "markdown": text[offset:end],
                  "next_offset": end if end < len(text) else None}
         if offset == 0 and (folder / "pdf-pages.json").is_file():
@@ -217,6 +243,17 @@ class MaterialSession:
             filename = self.docs[index]["markdown_filename"]
             raise ValueError(f"请用 material_page 查看文件 {index}（{filename}）第 {page} 页。"
                              "用 material_read 从偏移 0 回读可取得该文件其余待核对的页码。")
+        if self.organize:
+            for index, count in enumerate(self.figure_counts):
+                for number in range(1, count + 1):
+                    if (index, number) not in self.seen_figures:
+                        raise ValueError(f"先用 material_figure 查看文件 {index} 的原图 {number}。")
+            try:
+                result = json.loads(final)
+            except (ValueError, TypeError):
+                raise ValueError("整理结果必须是含 im_figures 的 JSON 对象。") from None
+            checked_notes(result, self.figure_counts)
+            return result
         try:
             value = json.loads(final)
         except (TypeError, ValueError):
@@ -235,6 +272,9 @@ async def conversation(rpc, thread_id, queue, session):
     request = {**session.request, "documents": [
         {"document": index, "source_filename": doc["source_filename"], "markdown_filename": doc["markdown_filename"],
          "reference": doc["reference"]} for index, doc in enumerate(session.docs)]}
+    if session.organize:
+        for doc, count in zip(request["documents"], session.figure_counts):
+            doc["figure_count"] = count
     message = json.dumps(request, ensure_ascii=False)
     session.update("reading_documents" if session.docs else "generating_prompt", "Codex 已开始处理本次请求")
     for attempt in range(3):
@@ -251,7 +291,8 @@ async def conversation(rpc, thread_id, queue, session):
             if data.get("threadId") not in (None, thread_id) or data.get("turnId") not in (None, turn):
                 raise JobError("INVALID_TRACE", "模型事件与本任务会话不匹配。")
             if method == "item/tool/call":
-                if data.get("namespace") or data.get("tool") not in ("material_read", "material_page"):
+                allowed = ("material_read", "material_page", "material_figure") if session.organize else ("material_read", "material_page")
+                if data.get("namespace") or data.get("tool") not in allowed:
                     raise JobError("UNEXPECTED_TOOL", "会话请求了任务范围外的工具。")
                 try:
                     items = await run_material_io(session.call, data["tool"], data["arguments"])
@@ -288,8 +329,10 @@ async def run_agent(settings, root, session):
     try:
         await rpc.start()
         params = text_thread_parameters(settings, root)
-        params.update(dynamicTools=TOOLS, developerInstructions=INSTRUCTIONS, ephemeral=True)
-        params["config"]["developer_instructions"] = INSTRUCTIONS
+        instructions = FIGURE_INSTRUCTIONS if session.organize else INSTRUCTIONS
+        params.update(dynamicTools=TOOLS + [FIGURE_TOOL] if session.organize else TOOLS,
+                      developerInstructions=instructions, ephemeral=True)
+        params["config"]["developer_instructions"] = instructions
         record = await rpc.request("thread/start", params)
         thread = verify_thread(record, effective_config(settings), root)
         if record.get("runtimeWorkspaceRoots"):

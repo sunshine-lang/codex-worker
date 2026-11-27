@@ -119,11 +119,13 @@ class MaterialsGateway(Component):
             if not isinstance(obj, dict):
                 raise ValueError("请输入一个 JSON 对象。")
             operation = obj.get("operation", "submit")
-            if operation == "submit":
+            if operation in ("submit", "organize"):
                 key = str(uuid.UUID(str(obj["submission_key"]))) if "submission_key" in obj else str(uuid.uuid4())
                 data = self.submission(obj, getattr(self.request, "files", None))
                 data["submission_key"] = key
                 method, path = "POST", "/v1/material-tasks"
+                if operation == "organize":
+                    path += "/organize"
             elif operation in ("status", "result"):
                 task_id = obj.get("task_id")
                 if not isinstance(task_id, str) or not re.fullmatch(r"mat_[0-9a-f]{32}", task_id):
@@ -131,7 +133,7 @@ class MaterialsGateway(Component):
                 method, data = "GET", None
                 path = "/v1/material-tasks/" + task_id + ("/result" if operation == "result" else "")
             else:
-                raise ValueError("operation 支持 submit、status、result。")
+                raise ValueError("operation 支持 submit、organize、status、result。")
             entered = (getattr(self, "worker_url", "") or "").strip().rstrip("/")
             base = entered or (os.environ.get("MATERIALS_WORKER_URL") or DEFAULT_WORKER_URL).strip().rstrip("/")
             secret = self.worker_token

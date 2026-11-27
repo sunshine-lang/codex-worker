@@ -28,7 +28,7 @@ def run(monkeypatch, operation, entered, saved, *, token="fixture"):
         return httpx.Response(200, json={"status": "ok"})
     monkeypatch.setattr(httpx, "AsyncClient", partial(httpx.AsyncClient, transport=httpx.MockTransport(reply)))
     data = {"operation": operation, "task_id": TASK}
-    if operation == "submit":
+    if operation in ("submit", "organize"):
         data.update(project_name="fixture", business_tag="IM", source_language="en", target_language="zh")
     gateway = SimpleNamespace(request=SimpleNamespace(text=json.dumps(data)), worker_url=entered,
                               worker_token=token, saved_worker_url=AsyncMock(return_value=saved))
@@ -38,6 +38,7 @@ def run(monkeypatch, operation, entered, saved, *, token="fixture"):
 
 
 @pytest.mark.parametrize(("operation", "method", "path"), [
+    ("organize", "POST", "/v1/material-tasks/organize"),
     ("submit", "POST", "/v1/material-tasks"), ("status", "GET", f"/v1/material-tasks/{TASK}"),
     ("result", "GET", f"/v1/material-tasks/{TASK}/result")])
 def test_saved_address_drives_each_operation(monkeypatch, operation, method, path):
