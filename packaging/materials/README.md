@@ -42,6 +42,8 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 
 ## Markdown 材料文件名与升级验收
 
+专利新流程使用同一材料入口和端口。服务器在材料分支更新后，按照上方安装和启动步骤更新材料实例。请求 `GET /v1/ready` 应见 `patent_reading_prompt="patent-reading-prompt/1"`。Langflow 原有的 `submit/status/result` 即可调用。以 `business_tag="专利"` 提交参考原件，结果中的 `prompt_input.files[].sha256` 应逐项等于所取回材料 Markdown 的 UTF-8 字节指纹，`prompt_input.sha256` 应与状态中的 `reading_copy_sha256` 相同。
+
 更新材料分支、运行安装和启动命令后，通过带材料令牌的 `GET /v1/ready` 确认 `markdown_filenames` 为 `true`。新任务先转写全部附件，含图的独立 Markdown 也准备好后才启动模型。任一附件转换失败时，状态保留失败原件名。
 
 每项 `documents_markdown` 返回三个字段：`source_filename` 为上传原名，`markdown_filename` 为交付名，`markdown` 为正文。下游用返回的交付名保存或挂载，把 Prompt 与全部材料放在同一目录。例如 `说明.docx` 和 `说明.pdf` 返回 `01-说明.md`、`02-说明.md`。目录与正文里的本单材料链接均指向对应 Markdown，可在链接后保留原页码、工作表或行号。历史任务保持原文档和 Prompt，读取历史 JSON 的客户端应兼容缺少新增字段。[联调 Python 示例](../../integrations/materials/material_client.py)

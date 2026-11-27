@@ -125,6 +125,16 @@ $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$($state.task_id).
 
 ## 通过 Langflow 调用
 
+### 专利业务：先定稿，再生成 Prompt
+
+新建专利任务沿用 `operation="submit"` 和 `business_tag="专利"`。直连 8787 仍使用 `POST /v1/material-tasks`。如果待译 CSV 只用于后续翻译，提交客户指南和参考 PDF 即可。机器上的 `GET /v1/ready` 返回 `patent_reading_prompt: "patent-reading-prompt/1"` 时，该 Worker 已支持此路径。
+
+Worker 先转写原件。Word 的删除／插入、截图的修改前后、PDF 的例句分行、可识别的着重文字和图版按原件位置记录。读图会话按编号逐处写入文字，独立复核会话重新打开原图，可保留或修正每条记录。清晰部分与无法判读的部分要分开写；原件自身不一致时保留双方原话。文本已经完整、没有图版的材料可以直接排版。
+
+复核结束后，Worker 保存阅读稿及其 SHA-256 清单。生成 Prompt 的新会话只能读取这次定稿。发布时再次核对每份内容，指纹不符会使该任务失败。正常结果仍包含 `translation_prompt` 和 `documents_markdown`，另附 `processing_mode` 和 `prompt_input`。其中 `prompt_input.files` 记录原件指纹、Markdown 文件名、字节数和内容指纹，`prompt_input.sha256` 标识整组有序定稿。历史任务仍按原任务号取其已发布结果。
+
+校验会拦截把“无需生成句段译文”带进下游任务目标的草稿。发布器仅清理目标或交付章节中可独立识别的准备阶段状态句，引用、代码和客户示例保留。发生清理时，任务目录留有清理前的文本供对照。
+
 ### 仅整理 IM 资料
 
 校对人员可以先取得每份原件的可编辑 Markdown。部署该版本后，`GET /v1/ready` 的 `organize_business_tags` 包含 `IM`。在 Langflow 使用 `operation="organize"`，项目字段和 `documents` 的传法与 `submit` 相同，业务标签填 `IM`。直连 Worker 的提交入口是 `POST /v1/material-tasks/organize`。查询与取回沿用同一个任务号及原有的 `status`、`result` 操作。

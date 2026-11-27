@@ -1,4 +1,4 @@
-"""A single tool-enabled Codex thread handles one complete material submission."""
+"""Material transcriptions, visual evidence and scoped prompt-generation sessions."""
 import asyncio
 import json
 import re
@@ -20,6 +20,15 @@ PROMPT_SECTIONS = {
     "# 标签保留与交付格式 (TAGS & DELIVERABLES)": "说明标签、变量、占位符和明确给出的译文交付约定。未指定输出载体时，遵循调用方约定。",
 }
 PROMPT_OUTLINE = "\n\n".join(f"{heading}\n\n{guidance}" for heading, guidance in PROMPT_SECTIONS.items())
+
+PROJECT_RULES = """## 翻译规则提炼
+
+- **保留客户原话中的约束。** 把要求、适用对象、触发条件和例外写在一起，保留“必须／不得”“优先／建议”“可以”的区别，以及“最多”“预计”等限定。客户指定的固定译法或完整英文句式逐字保留，包括否定、连词、数字、单位、标签及有意义的上下标。本单原文尚未出现、但客户指南明确指定的写法，作为条件规则保留。
+- **说清客户纠正了什么。** 对每条明确纠错，在同一条中写出原词或原句、适用场景、客户纠正的旧译和认可的译法。客户只指出错误时，保留已知错译，将正译标为“待确认”。原件并列允许的译法照列，选择条件以原件为准。
+- **用本单原文判断历史反馈的适用范围。** 核对对象、文件类型和实际语境，包括同义表达与缩写。能迁移的意见写成条件规则，优先用本单原文举例。仅有摘录时，结论限于已见内容。其他项目独有的研究、设备、人群或数据细节留在对应材料 Markdown 中。
+- **让每条客户要求可以回查。** 引用本单材料时，在普通正文直接复制清单的 `reference`（例如 `[材料](material:0)`），后接具体位置。Worker 会将它解析为实际交付文件的链接。外部指南一节须覆盖全部清单。Word 可用条款、章节或图号，Excel 用工作表、行号及第几张图，CSV 用原记录或 ID，PDF 用原始页码。直接写入的要求标为“项目需求”。原文提到但未上传的文件写作《原名》（未提供），客户指定的其他输出文件可写作《原名》（下游交付物）。必须逐字保留的文件名示例放在引用块或代码块中。
+- **区分客户指示、工具通则和译员建议。** 库名、版本、启用状态、交付格式及其他项目配置，须有本单依据。原件指定优先级时按其处理。发生冲突且无法裁决时，列出双方出处与待确认点。影响翻译或交付的人工操作写明执行人和条件。
+- **按语境使用翻译记忆（TM）。** 即使候选已启用且匹配率为 100%，下游仍须核对句意、上下文、产品或使用场景、生效术语及客户修订。吻合时可复用，明确冲突时修正或重译，依据不足时标为“待确认”。具体的锁定、跳过、覆盖策略以本单明确给出的约定为准。"""
 
 INSTRUCTIONS = f"""# 项目翻译材料预处理
 
@@ -52,14 +61,7 @@ INSTRUCTIONS = f"""# 项目翻译材料预处理
 3. **查看原页。** 遇到依赖图示、表格布局、格式或批注的要求，调用 `material_page(document, page)`。页码从 1 开始。PDF 首次读取返回的 `pages_to_view` 要逐页查看，包括扫描页和含图形或批注的页。其他页按需查看。字迹不清、无法判定的内容标为“待确认”。
 4. **确认材料用途。** 根据本单文字说明和文件内容，区分客户指南、工单说明、历史反馈及待译原文。材料同时承担几种用途时，按具体段落或条目判断。
 
-## 翻译规则提炼
-
-- **保留客户原话中的约束。** 把要求、适用对象、触发条件和例外写在一起，保留“必须／不得”“优先／建议”“可以”的区别，以及“最多”“预计”等限定。客户指定的固定译法或完整英文句式逐字保留，包括否定、连词、数字、单位、标签及有意义的上下标。本单原文尚未出现、但客户指南明确指定的写法，作为条件规则保留。
-- **说清客户纠正了什么。** 对每条明确纠错，在同一条中写出原词或原句、适用场景、客户纠正的旧译和认可的译法。客户只指出错误时，保留已知错译，将正译标为“待确认”。原件并列允许的译法照列，选择条件以原件为准。
-- **用本单原文判断历史反馈的适用范围。** 核对对象、文件类型和实际语境，包括同义表达与缩写。能迁移的意见写成条件规则，优先用本单原文举例。仅有摘录时，结论限于已见内容。其他项目独有的研究、设备、人群或数据细节留在对应材料 Markdown 中。
-- **让每条客户要求可以回查。** 引用本单材料时，在普通正文直接复制清单的 `reference`（例如 `[材料](material:0)`），后接具体位置。Worker 会将它解析为实际交付文件的链接。外部指南一节须覆盖全部清单。Word 可用条款、章节或图号，Excel 用工作表、行号及第几张图，CSV 用原记录或 ID，PDF 用原始页码。直接写入的要求标为“项目需求”。原文提到但未上传的文件写作《原名》（未提供），客户指定的其他输出文件可写作《原名》（下游交付物）。必须逐字保留的文件名示例放在引用块或代码块中。
-- **区分客户指示、工具通则和译员建议。** 库名、版本、启用状态、交付格式及其他项目配置，须有本单依据。原件指定优先级时按其处理。发生冲突且无法裁决时，列出双方出处与待确认点。影响翻译或交付的人工操作写明执行人和条件。
-- **按语境使用翻译记忆（TM）。** 即使候选已启用且匹配率为 100%，下游仍须核对句意、上下文、产品或使用场景、生效术语及客户修订。吻合时可复用，明确冲突时修正或重译，依据不足时标为“待确认”。具体的锁定、跳过、覆盖策略以本单明确给出的约定为准。
+{PROJECT_RULES}
 
 ## 输出格式
 
@@ -129,6 +131,7 @@ async def run_material_io(operation, *args):
 
 
 class MaterialSession:
+    thread_field = "codex_thread_id"
     def __init__(self, root, job, touch):
         self.root = Path(root)
         self.request = job["request"]
@@ -142,6 +145,28 @@ class MaterialSession:
         self.pending_pdf_pages = set()
         self.figure_counts = []
         self.seen_figures = set()
+
+    @property
+    def tools(self):
+        return TOOLS + [FIGURE_TOOL] if self.organize else TOOLS
+
+    @property
+    def instructions(self):
+        return FIGURE_INSTRUCTIONS if self.organize else INSTRUCTIONS
+
+    def model_documents(self):
+        docs = [
+            {"document": i, "source_filename": doc["source_filename"], "markdown_filename": doc["markdown_filename"],
+             "reference": doc["reference"]}
+            for i, doc in enumerate(self.docs)
+        ]
+        if self.organize:
+            for doc, count in zip(docs, self.figure_counts, strict=True):
+                doc["figure_count"] = count
+        return docs
+
+    def read_source(self, index):
+        return (self.root / "documents" / str(index) / "source.md").read_text(encoding="utf-8")
 
     @property
     def reading_complete(self):
@@ -222,7 +247,7 @@ class MaterialSession:
         offset = args.get("offset")
         if type(offset) is not int or not 0 <= offset <= self.read_to[index]:
             raise ValueError(f"可从偏移 0 到 {self.read_to[index]} 之间开始读取。")
-        text = (folder / "source.md").read_text(encoding="utf-8")
+        text = self.read_source(index)
         end = min(len(text), offset + 20000)
         self.read_to[index] = max(self.read_to[index], end)
         if end == len(text):
@@ -269,12 +294,8 @@ class MaterialSession:
 
 
 async def conversation(rpc, thread_id, queue, session):
-    request = {**session.request, "documents": [
-        {"document": index, "source_filename": doc["source_filename"], "markdown_filename": doc["markdown_filename"],
-         "reference": doc["reference"]} for index, doc in enumerate(session.docs)]}
-    if session.organize:
-        for doc, count in zip(request["documents"], session.figure_counts):
-            doc["figure_count"] = count
+    request = {**session.request, "documents": session.model_documents()}
+    allowed = {t["name"] for t in session.tools}
     message = json.dumps(request, ensure_ascii=False)
     session.update("reading_documents" if session.docs else "generating_prompt", "Codex 已开始处理本次请求")
     for attempt in range(3):
@@ -291,7 +312,6 @@ async def conversation(rpc, thread_id, queue, session):
             if data.get("threadId") not in (None, thread_id) or data.get("turnId") not in (None, turn):
                 raise JobError("INVALID_TRACE", "模型事件与本任务会话不匹配。")
             if method == "item/tool/call":
-                allowed = ("material_read", "material_page", "material_figure") if session.organize else ("material_read", "material_page")
                 if data.get("namespace") or data.get("tool") not in allowed:
                     raise JobError("UNEXPECTED_TOOL", "会话请求了任务范围外的工具。")
                 try:
@@ -329,9 +349,8 @@ async def run_agent(settings, root, session):
     try:
         await rpc.start()
         params = text_thread_parameters(settings, root)
-        instructions = FIGURE_INSTRUCTIONS if session.organize else INSTRUCTIONS
-        params.update(dynamicTools=TOOLS + [FIGURE_TOOL] if session.organize else TOOLS,
-                      developerInstructions=instructions, ephemeral=True)
+        instructions = session.instructions
+        params.update(dynamicTools=session.tools, developerInstructions=instructions, ephemeral=True)
         params["config"]["developer_instructions"] = instructions
         record = await rpc.request("thread/start", params)
         thread = verify_thread(record, effective_config(settings), root)
@@ -339,7 +358,7 @@ async def run_agent(settings, root, session):
             raise JobError("UNEXPECTED_RUNTIME", "材料会话没有获得约定的隔离环境。")
         queue = rpc.subscribe(thread)
         rpc.tool_threads.add(thread)
-        session.touch(codex_thread_id=thread)
+        session.touch(**{session.thread_field:thread})
         return await conversation(rpc, thread, queue, session)
     finally:
         # Each task owns this Windows Job Object and all of its child processes.

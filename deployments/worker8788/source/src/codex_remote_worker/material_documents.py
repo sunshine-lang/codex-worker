@@ -111,7 +111,7 @@ def checked_docx(path, folder):
         raise JobError("INVALID_DOCUMENT", "文件不是可读取的 Word 文档。") from exc
 
 
-def transcribe_pdf(source, folder):
+def transcribe_pdf(source, folder, *, inline_delivery=True):
     import pypdfium2 as pdfium
 
     assets = folder / "assets"
@@ -146,9 +146,11 @@ def transcribe_pdf(source, folder):
                     body = "本页无可提取的文字，内容见原页图。"
                 section = f"## 第 {number} 页\n\n{body}\n\n![第 {number} 页原图]({relative})\n\n"
                 image_size = (folder / relative).stat().st_size
-                used += len(section.encode("utf-8")) + len("data:image/png;base64,") + 4 * ((image_size + 2) // 3)
+                media_size = len("data:image/png;base64,") + 4 * ((image_size + 2) // 3) if inline_delivery else image_size
+                used += len(section.encode("utf-8")) + media_size
                 if used > MAX_DELIVERY:
-                    raise JobError("LIMIT_EXCEEDED", "含 PDF 页图的 Markdown 交付内容超过 96 MiB。")
+                    message = "含 PDF 页图的 Markdown 交付内容超过 96 MiB。" if inline_delivery else "PDF 文字与页图超过 96 MiB。"
+                    raise JobError("LIMIT_EXCEEDED", message)
                 md.write(section)
     except pdfium.PdfiumError as exc:
         if exc.err_code == pdfium.raw.FPDF_ERR_PASSWORD:
@@ -199,12 +201,12 @@ def identify_source(source, folder):
     return typed
 
 
-def transcribe(source, folder):
+def transcribe(source, folder, *, inline_delivery=True):
     folder.mkdir(parents=True, exist_ok=True)
     source = identify_source(source, folder)
     suffix = source.suffix.lower()
     if suffix == ".pdf":
-        return transcribe_pdf(source, folder)
+        return transcribe_pdf(source, folder, inline_delivery=inline_delivery)
     docx = source
     if suffix == ".doc":
         docx = office_convert(source, folder / "converted", "docx")

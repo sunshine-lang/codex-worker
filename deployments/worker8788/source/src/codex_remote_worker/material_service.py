@@ -16,8 +16,10 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .common import JobError, canonical, digest, now, safe_name, write_json
 from .material_agent import MaterialSession, run_agent, run_material_io
+from .material_patent_session import run_patent_task
 from .material_documents import DOCUMENT_TYPES, MAX_DELIVERY
 from .material_organize import organize_documents
+from .material_patent import PIPELINE as PATENT_PIPELINE
 from .material_references import resolve_references
 from .store import InstanceLock, Store
 
@@ -30,7 +32,8 @@ FIELDS = ("project_name", "business_tag", "source_language", "target_language")
 
 def public(job):
     fields = ("project_name", "status", "stage", "documents_completed", "documents_total",
-              "current_file", "recent_action", "execution_slot", "created_at", "updated_at", "error")
+              "current_file", "recent_action", "execution_slot", "created_at", "updated_at", "error",
+              "material_pipeline", "reading_copy_sha256")
     return {"task_id": job["job_id"], "submission_key": job["request_key"],
             **{field: job[field] for field in fields if field in job}}
 
@@ -88,6 +91,9 @@ def accept(store, root, obj, capacity, organize=False):
                   "request": request, "project_name": request["project_name"], "documents": manifest,
                   "status": "queued", "stage": "queued", "documents_completed": 0, "documents_total": len(docs),
                   "created_at": timestamp, "updated_at": timestamp, "recent_action": "已收妥本次项目材料"}
+        if not organize and request["business_tag"] == "专利":
+            # Keep legacy submit fingerprints valid. Existing jobs keep their original execution path.
+            record["material_pipeline"] = PATENT_PIPELINE
         return store.accept(record, stage, root / "tasks" / task, capacity)
 
 
@@ -127,9 +133,14 @@ def create_material_app(settings, agent=run_agent):
             folder = root / "tasks" / task
             def touch(**values):
                 store.update(task, expected={"running"}, **values)
-            session = MaterialSession(folder, job, touch)
             try:
                 touch(execution_slot=slot, recent_action="已取得执行通道")
+                if job.get("material_pipeline") == PATENT_PIPELINE:
+                    async with asyncio.timeout(7200):
+                        await run_patent_task(settings, folder, job, touch, agent)
+                    touch(status="completed", stage="completed", recent_action="专利阅读稿与同版 Prompt 已保存", current_file=None)
+                    continue
+                session = MaterialSession(folder, job, touch)
                 async with asyncio.timeout(7200):
                     await session.prepare()
                     if session.organize and not any(session.figure_counts):
@@ -206,7 +217,8 @@ def create_material_app(settings, agent=run_agent):
     async def ready(include_channels: bool = False):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
                   "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES,
-                  "format_detection": "content", "markdown_filenames": True, "organize_business_tags": ["IM"]}
+                  "format_detection": "content", "markdown_filenames": True, "organize_business_tags": ["IM"],
+                  "patent_reading_prompt": PATENT_PIPELINE}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():
