@@ -182,7 +182,7 @@ def test_slots_zero_files_and_validation(tmp_path):
 
     with TestClient(create_material_app(settings(tmp_path), agent)) as client:
         assert client.get("/v1/ready").status_code == 401
-        assert client.get("/v1/ready", headers=AUTH).json()["max_attachment_bytes_per_task"] == 128 * 1024**2
+        assert client.get("/v1/ready", headers=AUTH).json()["max_attachment_bytes_per_task"] == 256 * 1024**2
         route = "/v1/ready?include_channels=true"
         assert client.get(route).status_code == 401
         assert "channels" not in client.get("/v1/ready", headers=AUTH).json()

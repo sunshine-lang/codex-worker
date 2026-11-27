@@ -76,7 +76,7 @@ def test_export_shows_address_next_to_token():
 def test_client_and_gateway_apply_one_budget_to_all_originals(tmp_path, monkeypatch):
     make_documents = runpy.run_path(str(ROOT / "material_client.py"))["make_documents"]
     gateway_settings = Gateway.submission.__globals__
-    assert make_documents.__globals__["MAX_BYTES"] == gateway_settings["MAX_INPUT_BYTES"] == 128 * 1024**2
+    assert make_documents.__globals__["MAX_BYTES"] == gateway_settings["MAX_INPUT_BYTES"] == 256 * 1024**2
     monkeypatch.setitem(make_documents.__globals__, "MAX_BYTES", 8)
     monkeypatch.setitem(gateway_settings, "MAX_INPUT_BYTES", 8)
     files = [tmp_path / "first.txt", tmp_path / "second.txt"]

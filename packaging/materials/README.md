@@ -52,7 +52,7 @@ $privateConfig = 'C:\CodexWorkerData-AppServer-8790\private\credentials.local.js
 
 流程是请求输入 → 项目材料 Worker → 任务响应。可移植的画布在 [flow.json](../../integrations/materials/flow.json)，节点源码在 [component.py](../../integrations/materials/component.py)。导入新实例后，在第二个节点配置地址与令牌。运行入口使用 `POST /api/v1/run/<flow_id>`，以聊天输入传入序列化的业务 JSON，输出组件是 `ChatOutput-Materials`。
 
-以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件按内容识别，每单附件原始字节合计上限为 128 MiB。更新后可在 `GET /v1/ready` 查看 `max_attachment_bytes_per_task`（134217728）。通过 Langflow 提交大单时，同步本分支的「项目材料 Worker」节点代码及下游使用的 `material_client.py`。
+以下为示例提交。将示意的 Base64 替换为文件内容。首版 `translation_requirements` 接受文字，可传空字符串。项目名是标识，`documents` 默认为空列表。文件按内容识别，每单附件原始字节合计上限为 256 MiB。更新后可在 `GET /v1/ready` 查看 `max_attachment_bytes_per_task`（268435456）。通过 Langflow 提交大单时，同步本分支的「项目材料 Worker」节点代码及下游使用的 `material_client.py`。
 
 ~~~json
 {
