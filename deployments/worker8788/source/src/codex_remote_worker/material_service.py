@@ -24,7 +24,7 @@ from .material_references import resolve_references
 from .store import InstanceLock, Store
 
 LOG = logging.getLogger(__name__)
-MAX_INPUT = 32 * 1024 * 1024
+MAX_INPUT = 128 * 1024 * 1024
 MAX_BODY = (MAX_INPUT * 4 // 3) + 1024 * 1024
 TASK_ID = re.compile(r"mat_[0-9a-f]{32}\Z")
 FIELDS = ("project_name", "business_tag", "source_language", "target_language")
@@ -81,7 +81,7 @@ def accept(store, root, obj, capacity, organize=False):
                 raise JobError("INVALID_DOCUMENT", f"附件不是有效的 Base64：{name}") from exc
             total += len(raw)
             if not raw or total > MAX_INPUT:
-                raise JobError("INVALID_DOCUMENT", f"附件为空或总量超过 32 MiB：{name}")
+                raise JobError("INVALID_DOCUMENT", f"附件为空或总量超过 128 MiB：{name}")
             # Keep legacy storage names (and idempotency fingerprints); unfamiliar suffixes stay inert.
             stored = f"{index:04d}" + (suffix if suffix[1:] in DOCUMENT_TYPES else ".input")
             (stage / "input" / stored).write_bytes(raw)
@@ -218,7 +218,7 @@ def create_material_app(settings, agent=run_agent):
         result = {"ready": True, "service": "materials", "execution_slots": slots,
                   "execution_slot_unit": "whole_submission", "document_types": DOCUMENT_TYPES,
                   "format_detection": "content", "markdown_filenames": True, "organize_business_tags": ["IM"],
-                  "patent_reading_prompt": PATENT_PIPELINE}
+                  "patent_reading_prompt": PATENT_PIPELINE, "max_attachment_bytes_per_task": MAX_INPUT}
         if include_channels:
             channels = [{"execution_slot": i, "status": "idle"} for i in range(1, slots + 1)]
             for job in app.state.store.unfinished():
@@ -241,6 +241,7 @@ def create_material_app(settings, agent=run_agent):
             obj = json.loads(raw)
         except (ValueError, UnicodeError) as exc:
             raise JobError("INVALID_INPUT", "请求需要 UTF-8 JSON。") from exc
+        del raw  # Release the encoded request buffer before decoding attachments.
         job, replay = await asyncio.to_thread(accept, app.state.store, root, obj, settings.queue_capacity, organize)
         app.state.wake.set()
         return JSONResponse(public(job), status_code=200 if replay else 202)

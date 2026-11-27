@@ -18,7 +18,7 @@ from lfx.utils.file_path_security import component_file_access_scopes, enforce_l
 
 # The deployment can pin its Worker here or set MATERIALS_WORKER_URL on Langflow.
 DEFAULT_WORKER_URL = ""
-MAX_INPUT_BYTES = 32 * 1024 * 1024
+MAX_INPUT_BYTES = 128 * 1024 * 1024
 
 
 class MaterialsGateway(Component):
@@ -90,14 +90,14 @@ class MaterialsGateway(Component):
                 path = self.uploaded_file(doc["file_path"])
                 name = doc.get("source_filename", path.name)
                 if path.stat().st_size > MAX_INPUT_BYTES - size:
-                    raise ValueError("本次附件总量超过 32 MiB。")
+                    raise ValueError("本次附件总量超过 128 MiB。")
                 raw = path.read_bytes()
                 encoded = base64.b64encode(raw).decode("ascii")
             else:
                 encoded = doc["content_base64"]
                 name = doc.get("source_filename")
                 if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_INPUT_BYTES - size + 2) // 3):
-                    raise ValueError("附件编码无效或超过 32 MiB。")
+                    raise ValueError("附件编码无效或超过 128 MiB。")
                 try:
                     raw = base64.b64decode(encoded, validate=True)
                 except ValueError:
@@ -108,7 +108,7 @@ class MaterialsGateway(Component):
                 raise ValueError(f"文件为空：{name}")
             size += len(raw)
             if size > MAX_INPUT_BYTES:
-                raise ValueError("本次附件总量超过 32 MiB。")
+                raise ValueError("本次附件总量超过 128 MiB。")
             payload["documents"].append({"source_filename": name, "content_base64": encoded})
         return payload
 

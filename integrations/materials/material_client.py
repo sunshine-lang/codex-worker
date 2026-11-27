@@ -18,7 +18,7 @@ import uuid
 FLOW_URL = ""  # The Feishu quickstart supplies its approved test endpoint here.
 OUTPUT_NODE = "ChatOutput-Materials"
 KEY_FILE = Path(__file__).resolve().with_name("langflow_api_key.txt")
-MAX_BYTES = 32 * 1024 * 1024
+MAX_BYTES = 128 * 1024 * 1024
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -76,7 +76,7 @@ def make_documents(paths):
     documents, total = [], 0
     for path in paths:
         if path.stat().st_size > MAX_BYTES - total:
-            raise ValueError("每笔任务的附件原始字节合计最多 32 MiB。")
+            raise ValueError("每笔任务的附件原始字节合计最多 128 MiB。")
         raw = path.read_bytes()
         total += len(raw)
         if not raw or total > MAX_BYTES:

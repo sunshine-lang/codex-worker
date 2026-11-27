@@ -73,6 +73,27 @@ def test_export_shows_address_next_to_token():
     assert "fileTypes" not in entry["data"]["node"]["template"]["files"]
 
 
+def test_client_and_gateway_apply_one_budget_to_all_originals(tmp_path, monkeypatch):
+    make_documents = runpy.run_path(str(ROOT / "material_client.py"))["make_documents"]
+    gateway_settings = Gateway.submission.__globals__
+    assert make_documents.__globals__["MAX_BYTES"] == gateway_settings["MAX_INPUT_BYTES"] == 128 * 1024**2
+    monkeypatch.setitem(make_documents.__globals__, "MAX_BYTES", 8)
+    monkeypatch.setitem(gateway_settings, "MAX_INPUT_BYTES", 8)
+    files = [tmp_path / "first.txt", tmp_path / "second.txt"]
+    for file in files:
+        file.write_bytes(b"1234")
+    body = {"project_name": "fixture", "business_tag": "IM", "source_language": "en", "target_language": "zh"}
+    docs = make_documents(files)
+    assert Gateway.submission(None, {**body, "documents": docs}, [])["documents"] == docs
+    files[1].write_bytes(b"12345")
+    with pytest.raises(ValueError):
+        make_documents(files)
+    # Four and five bytes encode to the same length. Check the decoded total as well.
+    docs[1]["content_base64"] = base64.b64encode(b"12345").decode()
+    with pytest.raises(ValueError):
+        Gateway.submission(None, {**body, "documents": docs}, [])
+
+
 @pytest.mark.parametrize("filename", ["feedback.xlsx", "claims.PDF", "source.csv", "requirements.txt", "custom.data", "no_suffix"])
 def test_attachment_is_forwarded_verbatim_for_both_upload_paths(tmp_path, filename, monkeypatch):
     body = {"project_name":"example", "business_tag":"life sciences", "source_language":"en", "target_language":"zh"}
